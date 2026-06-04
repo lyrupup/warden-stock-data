@@ -72,6 +72,36 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 
 ---
 
+## 🚀 快速启动（后端）
+
+```bash
+# 1. 启动基础设施
+cd backend/deploy && docker compose up -d postgres redis
+
+# 2. 启动 API 服务（默认 stub 行情源，无需 gotdx）
+cd backend
+cp .env.example .env   # 可按需修改
+make tidy && make run
+
+# 健康检查
+curl http://localhost:8080/health
+```
+
+默认管理员：`admin` / `admin123`（可通过环境变量 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 覆盖）。
+
+开放 API 需 HMAC 签名头，详见 [`docs/BACKEND.md`](docs/BACKEND.md) §2.2。管理 API 使用 `Authorization: Bearer <jwt>`。
+
+```bash
+# 管理员登录
+curl -s -X POST http://localhost:8080/admin/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}'
+```
+
+后端目录结构与技术说明见 [`docs/BACKEND.md`](docs/BACKEND.md)；单元测试：`cd backend && make test`。
+
+---
+
 ## 📚 文档
 
 - 产品需求文档（PRD，按 M1~M6 模块）：[`docs/PRD.md`](docs/PRD.md)
