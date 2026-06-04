@@ -1,0 +1,761 @@
+openapi: 3.0.3
+info:
+  title: 守望者行情数据服务 API（Warden Stock Data Service）
+  description: >
+    行情数据中台。两套 BasePath：
+    管理 API `/admin`（管理员 JWT 鉴权，可读写）；
+    开放 API `/open/v1`（secretId/secretKey HMAC 签名鉴权，**纯只读**）。
+    所有金额/价格/比率/指标值为 decimal 字符串（见 components.schemas.Decimal）。
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+
+tags:
+  - name: AdminAuth
+    description: 管理员认证
+  - name: Credentials
+    description: 接入凭证管理（M5，仅管理员）
+  - name: DataSources
+    description: 数据源与更新作业管理（M1/M2，仅管理员）
+  - name: OpenMarket
+    description: 开放行情只读接口（M4，HMAC 凭证）
+  - name: OpenIndicator
+    description: 开放技术指标只读接口（M3/M4，HMAC 凭证）
+  - name: OpenMeta
+    description: 开放元数据只读接口（M4，HMAC 凭证）
+
+paths:
+  # ============== 管理 API ==============
+  /admin/auth/login:
+    post:
+      tags: [AdminAuth]
+      summary: 管理员登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: admin }
+                password: { type: string, example: "admin123" }
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          token: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /admin/auth/me:
+    get:
+      tags: [AdminAuth]
+      summary: 当前管理员信息
+      security: [{ AdminJWT: [] }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Admin" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/credentials:
+    get:
+      tags: [Credentials]
+      summary: 凭证列表
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: query, name: page, schema: { type: integer, default: 1 } }
+        - { in: query, name: size, schema: { type: integer, default: 20 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          list: { type: array, items: { $ref: "#/components/schemas/Credential" } }
+                          total: { type: integer }
+                          page: { type: integer }
+                          size: { type: integer }
+    post:
+      tags: [Credentials]
+      summary: 创建凭证（一次性返回 secretKey 明文）
+      security: [{ AdminJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCredentialReq" }
+      responses:
+        "200":
+          description: 创建成功，secretKey 仅此一次返回
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/CredentialSecret" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /admin/credentials/{id}:
+    parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+    get:
+      tags: [Credentials]
+      summary: 凭证详情 + 调用审计
+      security: [{ AdminJWT: [] }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/CredentialDetail" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Credentials]
+      summary: 修改配额 / 启停
+      security: [{ AdminJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rate_limit: { type: integer }
+                daily_quota: { type: integer }
+                status: { type: integer, enum: [0, 1] }
+                expire_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Credentials]
+      summary: 吊销凭证
+      security: [{ AdminJWT: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/credentials/{id}/rotate:
+    post:
+      tags: [Credentials]
+      summary: 轮换 secretKey（一次性返回新明文）
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/CredentialSecret" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /admin/datasources:
+    get:
+      tags: [DataSources]
+      summary: 数据源列表 + 健康状态
+      security: [{ AdminJWT: [] }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/DataSource" } } }
+
+  /admin/datasources/{id}:
+    put:
+      tags: [DataSources]
+      summary: 配置数据源
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                priority: { type: integer }
+                config: { type: object, additionalProperties: true }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+
+  /admin/datasources/{id}/healthcheck:
+    post:
+      tags: [DataSources]
+      summary: 触发连通性探测
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+
+  /admin/jobs:
+    get:
+      tags: [DataSources]
+      summary: 更新作业列表
+      security: [{ AdminJWT: [] }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/UpdateJob" } } }
+
+  /admin/jobs/{id}:
+    put:
+      tags: [DataSources]
+      summary: 配置作业（cron / 分批 / 并发 / 启停）
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cron_expr: { type: string, example: "0 0 17 * * *" }
+                batch_size: { type: integer, example: 20 }
+                concurrency: { type: integer, example: 10 }
+                enabled: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+
+  /admin/jobs/{id}/run:
+    post:
+      tags: [DataSources]
+      summary: 手动触发一次更新作业
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, enum: [full, incremental, snapshot, indicator], default: incremental }
+                market: { type: string, default: CN }
+                codes: { type: array, items: { type: string }, description: "为空表示全市场" }
+      responses:
+        "200":
+          description: 已派发
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { type: object, properties: { runId: { type: integer } } }
+        "409":
+          description: 已有同类作业运行中
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  /admin/jobs/runs:
+    get:
+      tags: [DataSources]
+      summary: 作业执行记录（分页）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: query, name: page, schema: { type: integer, default: 1 } }
+        - { in: query, name: size, schema: { type: integer, default: 20 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          list: { type: array, items: { $ref: "#/components/schemas/JobRun" } }
+                          total: { type: integer }
+
+  /admin/jobs/runs/{runId}:
+    get:
+      tags: [DataSources]
+      summary: 单次执行详情 / 进度
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: runId, required: true, schema: { type: integer } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/JobRun" } }
+
+  /admin/jobs/runs/{runId}/cancel:
+    post:
+      tags: [DataSources]
+      summary: 取消运行中作业
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: path, name: runId, required: true, schema: { type: integer } }]
+      responses:
+        "200": { $ref: "#/components/responses/OK" }
+
+  /admin/freshness:
+    get:
+      tags: [DataSources]
+      summary: 数据新鲜度
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: query, name: market, schema: { type: string, default: CN } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Freshness" } }
+
+  # ============== 开放 API（HMAC 凭证，只读） ==============
+  /open/v1/indices:
+    get:
+      tags: [OpenMarket]
+      summary: 大盘指数
+      security: [{ HmacSignature: [] }]
+      parameters: [{ in: query, name: market, schema: { type: string, default: CN } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/IndexQuote" } } }
+        "401": { $ref: "#/components/responses/CredentialError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /open/v1/quotes:
+    get:
+      tags: [OpenMarket]
+      summary: 批量个股快照
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: query, name: codes, required: true, schema: { type: string }, description: "逗号分隔，如 600000,000001" }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/StockQuote" } } }
+        "401": { $ref: "#/components/responses/CredentialError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /open/v1/stocks/{code}:
+    get:
+      tags: [OpenMarket]
+      summary: 单只个股快照
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/StockQuote" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /open/v1/stocks/{code}/kline:
+    get:
+      tags: [OpenMarket]
+      summary: 个股 K 线（支持 limit 或 from/to 区间，回测取历史区间用）
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: period, schema: { type: string, enum: [day, week, month, 1m, 5m, 15m, 30m, 60m], default: day } }
+        - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
+        - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "最近 N 根；与 from/to 互斥，区间优先" }
+        - { in: query, name: from, schema: { type: string, format: date }, description: "起始交易日（含），回测区间用" }
+        - { in: query, name: to, schema: { type: string, format: date }, description: "结束交易日（含），回测区间用" }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+
+  /open/v1/stocks/{code}/indicators:
+    get:
+      tags: [OpenIndicator]
+      summary: 单只个股技术指标（实时计算，缺失回退）
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型" }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/IndicatorResult" } }
+
+  /open/v1/indicators:
+    get:
+      tags: [OpenIndicator]
+      summary: 批量个股技术指标（读快照，量化因子 / 回测用）
+      description: >
+        读 stock_indicator_snapshots 历史指标快照。指定 trade_date 即取该交易日的
+        point-in-time 指标（无未来函数），可用于按日回放的量化回测信号生成。
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: query, name: codes, required: true, schema: { type: string }, description: "逗号分隔" }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: trade_date, schema: { type: string, format: date }, description: "指定历史交易日(point-in-time)；为空取最新交易日" }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/IndicatorResult" } } }
+
+  /open/v1/search:
+    get:
+      tags: [OpenMarket]
+      summary: 股票搜索（按代码 / 名称）
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: query, name: kw, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/StockBrief" } } }
+
+  /open/v1/securities:
+    get:
+      tags: [OpenMeta]
+      summary: 证券列表
+      security: [{ HmacSignature: [] }]
+      parameters: [{ in: query, name: market, schema: { type: string, default: CN } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/StockBrief" } } }
+
+  /open/v1/meta:
+    get:
+      tags: [OpenMeta]
+      summary: 元数据（市场列表 / 指标目录 / 数据新鲜度）
+      security: [{ HmacSignature: [] }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Meta" } }
+
+components:
+  securitySchemes:
+    AdminJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "管理 API 鉴权，Header `Authorization: Bearer <jwt>`"
+    HmacSignature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: >
+        开放 API 鉴权。需同时携带 Header：X-Secret-Id、X-Timestamp、X-Nonce、X-Signature。
+        签名串 = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\nSHA256Hex(body)，
+        Signature = Base64(HMAC_SHA256(secretKey, 签名串))。时间戳偏差 ±300s，nonce 防重放。
+
+  responses:
+    OK:
+      description: 操作成功
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+    BadRequest:
+      description: 参数错误
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+    Unauthorized:
+      description: 管理员未登录 / token 非法（40001）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+    CredentialError:
+      description: 凭证鉴权失败（41001 缺签名 / 41002 凭证无效 / 41003 签名错 / 41004 重放过期 / 41005 scope 不足）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+    RateLimited:
+      description: 触发限流或超配额（42001 / 42002）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiResponse" }
+
+  schemas:
+    Decimal:
+      type: string
+      description: 高精度数值（decimal），序列化为带引号字符串，如 "10.5000"。前端需转 number 再计算。
+      example: "10.5000"
+
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: {}
+
+    Admin:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        role: { type: string, example: admin }
+
+    CreateCredentialReq:
+      type: object
+      required: [consumer_name]
+      properties:
+        consumer_name: { type: string, example: "warden-stock-trading" }
+        rate_limit: { type: integer, default: 20, description: "QPS" }
+        daily_quota: { type: integer, default: 100000 }
+        expire_at: { type: string, format: date-time, nullable: true }
+
+    Credential:
+      type: object
+      properties:
+        id: { type: integer }
+        secret_id: { type: string, example: "AKIDxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+        consumer_name: { type: string }
+        scope: { type: string, example: read }
+        rate_limit: { type: integer }
+        daily_quota: { type: integer }
+        status: { type: integer, enum: [0, 1] }
+        expire_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CredentialSecret:
+      type: object
+      description: 仅创建 / 轮换时返回一次，secret_key 之后不可再获取
+      properties:
+        secret_id: { type: string }
+        secret_key: { type: string, description: "明文，仅此一次返回" }
+
+    CredentialDetail:
+      allOf:
+        - $ref: "#/components/schemas/Credential"
+        - type: object
+          properties:
+            access_stats:
+              type: array
+              items:
+                type: object
+                properties:
+                  stat_date: { type: string, format: date }
+                  call_count: { type: integer }
+                  error_count: { type: integer }
+                  last_access_at: { type: string, format: date-time }
+
+    DataSource:
+      type: object
+      properties:
+        id: { type: integer }
+        source: { type: string, example: gotdx }
+        market: { type: string, example: CN }
+        name: { type: string }
+        enabled: { type: boolean }
+        priority: { type: integer }
+        health: { type: string, enum: [ok, degraded, down, unknown] }
+
+    UpdateJob:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        job_type: { type: string, enum: [full, incremental, snapshot, indicator] }
+        market: { type: string, example: CN }
+        cron_expr: { type: string, example: "0 0 17 * * *" }
+        batch_size: { type: integer, example: 20 }
+        concurrency: { type: integer, example: 10 }
+        enabled: { type: boolean }
+
+    JobRun:
+      type: object
+      properties:
+        id: { type: integer }
+        job_id: { type: integer }
+        status: { type: string, enum: [running, done, failed, canceled] }
+        total: { type: integer }
+        processed: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+        error_msg: { type: string }
+
+    Freshness:
+      type: object
+      properties:
+        market: { type: string, example: CN }
+        latest_trade_date: { type: string, format: date }
+        kline_updated_to: { type: string, format: date }
+        last_scan_at: { type: string, format: date-time, nullable: true }
+        securities_count: { type: integer }
+
+    IndexQuote:
+      type: object
+      properties:
+        market: { type: string, example: CN }
+        index_code: { type: string, example: "000001" }
+        index_name: { type: string, example: "上证指数" }
+        price: { $ref: "#/components/schemas/Decimal" }
+        change_amount: { $ref: "#/components/schemas/Decimal" }
+        change_percent: { $ref: "#/components/schemas/Decimal" }
+        volume: { $ref: "#/components/schemas/Decimal" }
+        amount: { $ref: "#/components/schemas/Decimal" }
+        trade_date: { type: string, format: date-time }
+
+    StockQuote:
+      type: object
+      properties:
+        market: { type: string, example: CN }
+        stock_code: { type: string, example: "600000" }
+        stock_name: { type: string }
+        price: { $ref: "#/components/schemas/Decimal" }
+        open: { $ref: "#/components/schemas/Decimal" }
+        high: { $ref: "#/components/schemas/Decimal" }
+        low: { $ref: "#/components/schemas/Decimal" }
+        prev_close: { $ref: "#/components/schemas/Decimal" }
+        change_percent: { $ref: "#/components/schemas/Decimal" }
+        volume: { $ref: "#/components/schemas/Decimal" }
+        amount: { $ref: "#/components/schemas/Decimal" }
+        turnover_rate: { $ref: "#/components/schemas/Decimal" }
+        trade_date: { type: string, format: date-time }
+        stale: { type: boolean, description: "true 表示数据源异常时返回的降级快照" }
+
+    Kline:
+      type: object
+      properties:
+        date: { type: string, example: "2026-06-05" }
+        open: { $ref: "#/components/schemas/Decimal" }
+        high: { $ref: "#/components/schemas/Decimal" }
+        low: { $ref: "#/components/schemas/Decimal" }
+        close: { $ref: "#/components/schemas/Decimal" }
+        volume: { $ref: "#/components/schemas/Decimal" }
+        amount: { $ref: "#/components/schemas/Decimal" }
+
+    StockBrief:
+      type: object
+      properties:
+        stock_code: { type: string }
+        stock_name: { type: string }
+        market: { type: string, example: CN }
+        board: { type: string, example: "主板" }
+
+    IndicatorResult:
+      type: object
+      properties:
+        stock_code: { type: string }
+        trade_date: { type: string, format: date }
+        values:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/Decimal" }
+          example: { ma5: "12.3400", ma10: "12.1000", ma20: "11.8000", ma30: "11.5000", ma60: "10.9000" }
+
+    Meta:
+      type: object
+      properties:
+        markets:
+          type: array
+          items: { type: string }
+          example: [CN]
+        indicator_catalog:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, example: ma }
+              name: { type: string, example: "移动均线 MA" }
+              value_type: { type: string, enum: [number, bool] }
+              unit: { type: string }
+              params: { type: array, items: { type: object } }
+        freshness: { $ref: "#/components/schemas/Freshness" }
