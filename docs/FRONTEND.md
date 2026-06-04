@@ -226,7 +226,7 @@ interface IAuthState {
 ### 6.3 行情展示（features/market）
 
 - **大盘指数**：`/market` 卡片网格展示指数（现价、涨跌额、涨跌幅，涨跌色由 `changeColor`）。
-- **个股行情**：`/market/quote` 搜索框（`GET /admin` 等价 search）→ 选中后展示：
+- **个股行情**：`/market/quote` 搜索框（`GET /admin/market/search`）→ 选中后展示：
   - 个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时显示「数据延迟」徽标）。
   - **K 线图**（`kline-chart`，lightweight-charts）：日/周/月切换 + 复权切换；叠加 **MA5/MA10/MA20/MA30/MA60** 五条均线（数据来自指标接口）。
   - 指标面板：展示当前 MA5~MA60 数值。

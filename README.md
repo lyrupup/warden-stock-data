@@ -102,6 +102,29 @@ curl -s -X POST http://localhost:8080/admin/auth/login \
 
 ---
 
+## 🚀 快速启动（管理后台前端）
+
+```bash
+cd frontend
+cp .env.example .env    # 按需修改 VITE_API_BASE_URL
+npm install
+npm run dev             # http://localhost:5173
+```
+
+开发模式下 Vite 会将 `/admin` 代理到 `http://localhost:8080`（需后端服务已启动）。生产构建：`npm run build`。
+
+| 页面 | 路径 |
+|------|------|
+| 登录 | `/login` |
+| 概览 | `/` |
+| 凭证管理 | `/credentials` |
+| 行情中心 | `/market` |
+| 个股行情 | `/market/quote` |
+| 数据源 | `/ops/datasources` |
+| 更新作业 | `/ops/jobs` |
+
+---
+
 ## 📚 文档
 
 - 产品需求文档（PRD，按 M1~M6 模块）：[`docs/PRD.md`](docs/PRD.md)
