@@ -9,6 +9,7 @@ import (
 	openh "github.com/warden-stock/warden-stock-data/internal/handler/open"
 	"github.com/warden-stock/warden-stock-data/internal/middleware"
 	"github.com/warden-stock/warden-stock-data/internal/repository"
+	"github.com/warden-stock/warden-stock-data/internal/scheduler"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 	"github.com/warden-stock/warden-stock-data/pkg/cache"
 )
@@ -20,8 +21,9 @@ type Deps struct {
 	KlineSvc       *service.KlineService
 	IndicatorSvc   *service.IndicatorService
 	MetaSvc        *service.MetaService
-	JobRepo        *repository.JobRepository
-	AccessLogRepo  *repository.AccessLogRepository
+	JobRepo       *repository.JobRepository
+	JobRunner     *scheduler.JobRunner
+	AccessLogRepo *repository.AccessLogRepository
 	NonceStore     cache.NonceStore
 	RateLimiter    cache.RateLimiter
 	QuotaStore     cache.QuotaStore
@@ -43,7 +45,7 @@ func Setup(mode string, deps Deps) *gin.Engine {
 
 	authH := adminh.NewAuthHandler(deps.AdminSvc)
 	credH := adminh.NewCredentialHandler(deps.CredSvc, deps.AccessLogRepo)
-	jobH := adminh.NewJobHandler(deps.JobRepo, deps.QuoteSvc, deps.MetaSvc)
+	jobH := adminh.NewJobHandler(deps.JobRepo, deps.QuoteSvc, deps.MetaSvc, deps.JobRunner)
 	openH := openh.NewMarketHandler(deps.QuoteSvc, deps.KlineSvc, deps.IndicatorSvc, deps.MetaSvc)
 
 	adminAuth := middleware.NewAdminAuth(deps.AdminSvc)
