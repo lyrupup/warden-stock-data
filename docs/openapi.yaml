@@ -18,6 +18,8 @@ tags:
     description: 接入凭证管理（M5，仅管理员）
   - name: DataSources
     description: 数据源与更新作业管理（M1/M2，仅管理员）
+  - name: AdminMarket
+    description: 管理后台行情只读代理（M6，管理员 JWT，复用开放 API service 层）
   - name: OpenMarket
     description: 开放行情只读接口（M4，HMAC 凭证）
   - name: OpenIndicator
@@ -350,6 +352,98 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
                   - properties: { data: { $ref: "#/components/schemas/Freshness" } }
+
+  /admin/market/indices:
+    get:
+      tags: [AdminMarket]
+      summary: 大盘指数（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters: [{ in: query, name: market, schema: { type: string, default: CN } }]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/IndexQuote" } } }
+
+  /admin/market/search:
+    get:
+      tags: [AdminMarket]
+      summary: 股票搜索（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: query, name: kw, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/StockBrief" } } }
+
+  /admin/market/stocks/{code}:
+    get:
+      tags: [AdminMarket]
+      summary: 单只个股快照（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/StockQuote" } }
+
+  /admin/market/stocks/{code}/kline:
+    get:
+      tags: [AdminMarket]
+      summary: 个股 K 线（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: period, schema: { type: string, enum: [day, week, month], default: day } }
+        - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
+        - { in: query, name: limit, schema: { type: integer, default: 120 } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+
+  /admin/market/stocks/{code}/indicators:
+    get:
+      tags: [AdminMarket]
+      summary: 个股技术指标（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/IndicatorResult" } }
 
   # ============== 开放 API（HMAC 凭证，只读） ==============
   /open/v1/indices:
