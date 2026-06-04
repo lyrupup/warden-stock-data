@@ -7,17 +7,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/warden-stock/warden-stock-data/internal/repository"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 	"github.com/warden-stock/warden-stock-data/pkg/errcode"
 	"github.com/warden-stock/warden-stock-data/pkg/response"
 )
 
 type CredentialHandler struct {
-	credSvc *service.CredentialService
+	credSvc   *service.CredentialService
+	accessLog *repository.AccessLogRepository
 }
 
-func NewCredentialHandler(credSvc *service.CredentialService) *CredentialHandler {
-	return &CredentialHandler{credSvc: credSvc}
+func NewCredentialHandler(credSvc *service.CredentialService, accessLog *repository.AccessLogRepository) *CredentialHandler {
+	return &CredentialHandler{credSvc: credSvc, accessLog: accessLog}
 }
 
 func (h *CredentialHandler) List(c *gin.Context) {
@@ -61,7 +63,11 @@ func (h *CredentialHandler) Get(c *gin.Context) {
 		response.Fail(c, http.StatusNotFound, service.BizCode(err))
 		return
 	}
-	response.OK(c, cred)
+	var logs interface{}
+	if h.accessLog != nil {
+		logs, _ = h.accessLog.ListByCredential(c.Request.Context(), uint(id), 30)
+	}
+	response.OK(c, gin.H{"credential": cred, "access_logs": logs})
 }
 
 func (h *CredentialHandler) Update(c *gin.Context) {

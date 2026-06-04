@@ -14,16 +14,19 @@ import (
 )
 
 type Deps struct {
-	AdminSvc    *service.AdminService
-	CredSvc     *service.CredentialService
-	QuoteSvc    *service.QuoteService
-	KlineSvc    *service.KlineService
-	IndicatorSvc *service.IndicatorService
-	MetaSvc     *service.MetaService
-	JobRepo     *repository.JobRepository
-	NonceStore  cache.NonceStore
-	SignSkewSec int
-	NonceTTL    time.Duration
+	AdminSvc       *service.AdminService
+	CredSvc        *service.CredentialService
+	QuoteSvc       *service.QuoteService
+	KlineSvc       *service.KlineService
+	IndicatorSvc   *service.IndicatorService
+	MetaSvc        *service.MetaService
+	JobRepo        *repository.JobRepository
+	AccessLogRepo  *repository.AccessLogRepository
+	NonceStore     cache.NonceStore
+	RateLimiter    cache.RateLimiter
+	QuotaStore     cache.QuotaStore
+	SignSkewSec    int
+	NonceTTL       time.Duration
 	RequestTimeout time.Duration
 }
 
@@ -39,7 +42,7 @@ func Setup(mode string, deps Deps) *gin.Engine {
 	})
 
 	authH := adminh.NewAuthHandler(deps.AdminSvc)
-	credH := adminh.NewCredentialHandler(deps.CredSvc)
+	credH := adminh.NewCredentialHandler(deps.CredSvc, deps.AccessLogRepo)
 	jobH := adminh.NewJobHandler(deps.JobRepo, deps.QuoteSvc, deps.MetaSvc)
 	openH := openh.NewMarketHandler(deps.QuoteSvc, deps.KlineSvc, deps.IndicatorSvc, deps.MetaSvc)
 
@@ -72,8 +75,10 @@ func Setup(mode string, deps Deps) *gin.Engine {
 		}
 	}
 
+	rateLimit := middleware.NewRateLimitByCredential(deps.RateLimiter, deps.QuotaStore, deps.CredSvc, deps.AccessLogRepo)
+
 	open := r.Group("/open/v1")
-	open.Use(hmacAuth.Middleware())
+	open.Use(hmacAuth.Middleware(), rateLimit.Middleware())
 	{
 		open.GET("/indices", openH.Indices)
 		open.GET("/quotes", openH.Quotes)
