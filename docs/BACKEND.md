@@ -240,6 +240,10 @@ CREATE TABLE IF NOT EXISTS securities (
     CONSTRAINT uni_securities_market_code UNIQUE (market, code)
 );
 CREATE INDEX IF NOT EXISTS idx_securities_market ON securities(market);
+-- 代码/名称模糊搜索走 trgm GIN 索引（ILIKE '%kw%' 不再全表扫描）
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_securities_code_trgm ON securities USING gin (code gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_securities_name_trgm ON securities USING gin (name gin_trgm_ops);
 
 -- 交易日历（自维护 + gotdx K 线日期反推校正）
 CREATE TABLE IF NOT EXISTS trading_calendars (
@@ -444,12 +448,12 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | PUT | `/admin/datasources/:id` | 配置数据源（启停 / 连接池 / 优先级） |
 | POST | `/admin/datasources/:id/healthcheck` | 触发连通性探测 |
 | GET | `/admin/jobs` | 更新作业列表 |
-| PUT | `/admin/jobs/:id` | 配置作业（cron / 分批 / 并发 / 启停） |
+| PUT | `/admin/jobs/:id` | 配置作业（名称 / 市场 / cron / 分批 / 并发 / 启停；`job_type` 与时间字段不可改，`cron_expr` 服务端校验格式） |
 | POST | `/admin/jobs/:id/run` | 手动触发一次（`{type,market,codes?}`） → `{runId}` |
 | POST | `/admin/jobs/runs/:runId/cancel` | 取消运行中作业 |
 | GET | `/admin/jobs/runs` | 执行记录（分页，含进度） |
 | GET | `/admin/jobs/runs/:runId` | 单次执行详情 / 进度 |
-| GET | `/admin/freshness` | 数据新鲜度（全市场更新到哪个交易日、最近扫描时间） |
+| GET | `/admin/freshness` | 数据新鲜度（全市场更新到哪个交易日、最近扫描时间、已入库行情股票数 `kline_stock_count`） |
 
 > 管理 API 也可调用全部开放 API 的只读能力用于后台行情展示（后台前端直接复用 `/open/v1` 的 service 层或带管理员上下文的内部只读接口）。
 
@@ -463,7 +467,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | GET | `/open/v1/stocks/:code/kline?period=day&adjust=qfq&limit=120` | K 线（支持 `from`/`to` 交易日区间，回测取历史区间用） |
 | GET | `/open/v1/stocks/:code/indicators?types=ma5,ma10,ma20,ma30,ma60` | 单只实时指标 |
 | GET | `/open/v1/indicators?codes=...&types=ma5,ma60&trade_date=` | 批量指标（读快照） |
-| GET | `/open/v1/search?kw=` | 股票搜索 |
+| GET | `/open/v1/search?kw=` | 股票搜索（优先查本地 `securities` 表 + trgm 索引；库空时回源行情提供方） |
 | GET | `/open/v1/securities?market=CN` | 证券列表 |
 | GET | `/open/v1/meta` | 市场列表 / 指标目录 / 数据新鲜度 |
 
@@ -500,17 +504,47 @@ func NewProvider(market string, sources []DataSourceConfig) IMarketProvider {
 }
 ```
 
-- **gotdx 适配器**：完整迁移原系统 `gotdx_pool.go`（连接池借还、异常即弃、`WithAutoSelectFastest` 测速）、`gotdx_provider.go`（`recoverAs` 防 panic、懒加载证券名索引）、`gotdx_mapper.go`（价格 /100、/1000 量纲还原，换手率 /10000）。新增 `StockList`（基于 `StockAll(market)`）。
+- **gotdx 适配器**：`gotdx_pool.go`（连接池，见下）、`gotdx_provider.go`（`safeCall` 防 panic、懒加载证券名索引、`withClient(ctx, fn)` 借池执行）、`gotdx_mapper.go`（价格 /100、/1000 量纲还原，换手率 /10000）。`StockList` 基于 `StockAll(market)` 并过滤为 A 股个股。
 - **stub 适配器**：无 gotdx/无网络时返回示例数据，保证可编译可测（`-tags gotdx` 控制真实实现注入）。
 - **扩展**：新增市场/源 = 新增实现 `IMarketProvider` 的适配器 + 工厂注册，零侵入 M2/M3/M4。
+
+#### gotdx 连接池（`internal/integration/market/gotdx_pool.go`）
+
+通达信 `gotdx.Client` 是有状态 TCP 连接，单次 `Connect()` 握手实测约 1-4s。早期实现每请求新建/断开连接，导致缓存未命中时接口动辄数秒。连接池复用已建立连接，消除重复握手。
+
+- **容量模型**：`tokens`（带缓冲 channel，cap=maxConn 且初始填满）为「总连接配额」，持有 token 才能新建连接，把同时存在的连接数严格限制在 `maxConn`；`idle` 缓存空闲健康连接，复用期间持有其 token。任意时刻 `idle 连接 + 借出连接 = 已创建连接 = maxConn - len(tokens) ≤ maxConn`。
+- **借还**：`Acquire` 优先复用 `idle`，无空闲则消费 token 新建，配额耗尽时阻塞等待归还或 `ctx` 取消/超时；`Release` 对健康连接放回 `idle`，对出错/panic 连接 `Disconnect` 并归还 token，由后续请求重建（通达信节点不稳定，坏连接续用会读写错位，丢弃最稳妥）。
+- **健康判定**：`safeCall` 捕获 fn 的 error 与 panic；任一发生即视为连接不可复用。`WithClient` 对失败最多重试 3 次（每次取/建新连接）。
+- **并发**：`idle` / `tokens` 均为 channel，天然并发安全；移除了旧实现对所有 TDX 请求的全局串行锁，缓存未命中时可并发使用至多 `maxConn` 条连接。
+- **生命周期**：`maxConn` 由 `MARKET_GOTDX_MAX_CONN`（默认 10）配置；进程关停时经 `FallbackProvider.Close()` → `GotdxProvider.Close()` → `GotdxPool.Close()` 断开空闲连接。
+
+模块接口：
+
+```go
+type GotdxPool struct { /* idle / tokens / newClient ... */ }
+
+func NewGotdxPool(maxConn int) *GotdxPool
+func (p *GotdxPool) WithClient(ctx context.Context, fn func(*gotdx.Client) error) error
+func (p *GotdxPool) Close()
+
+// GotdxProvider 借池执行（各 IMarketProvider 方法内部调用）
+func (p *GotdxProvider) withClient(ctx context.Context, fn func(*gotdx.Client) error) error
+func (p *GotdxProvider) Close() error
+```
 
 ### M2 存储与增量更新调度（性能核心）
 
 - **取数链路（读，迁移自原系统）**：`Redis 命中 → Provider → stock_quotes 快照兜底(stale)`，TTL 盘中短、盘后长。
+- **指数行情**：`Redis 命中（TTL 5min）→ index_quotes 库内最新快照快速返回 + 后台 singleflight 刷新 TDX → 仅库空时同步拉取`。避免 Redis 过期后每次新建 TDX 连接阻塞首页 ~4s。
 - **增量更新（写）**：
 
 ```
-对每只标的:
+全市场增量（job_type=incremental）前置筛选:
+  latest = MAX(stock_daily_klines.trade_date)   // 全市场最新交易日；库空则全量
+  pending = securities 中满足「无 watermark 或 watermark < latest」的代码
+            // 已是最新的标的直接跳过，不再请求数据源
+
+对每只待更新标的:
   wm = watermark(market, code)            // 上次更新到的交易日
   from = wm.last_trade_date + 1 交易日     // 借助 trading_calendars
   bars = provider.Kline(code, "day", "qfq")  // gotdx 取最新 N 根
@@ -518,6 +552,10 @@ func NewProvider(market string, sources []DataSourceConfig) IMarketProvider {
   upsert stock_daily_klines(newBars)
   update watermark = max(trade_date)
 ```
+
+> **按 watermark 筛待更新（性能）**：`incremental` 类型且未显式指定 `codes` 时，`JobRunner.Run` 先用 `UpdateService.PendingCodes` 以「库内 K 线最大交易日」为基准过滤，仅对落后/新股发起数据源请求；盘后多数标的已最新时，请求量可从全市场约 5200 次降到个位/十位数。`full`/`indicator` 类型与显式指定 `codes` 不参与该过滤。
+
+> **作业类型**：`incremental`（增量 K 线+指标）、`full`（全量回补 K 线+逐日指标）、`indicator`/`snapshot`（仅指标）、`securities`（**仅同步证券列表**：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口，作为新股入库的轻量入口）。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`daily-incremental` 17:00、`securities-sync` 8:30），存量库也会自动补上后加入的默认作业。
 
 - **全市场扫描计算**（补齐原系统遗留缺口）：拉全市场 `securities` → 并发（信号量 channel + WaitGroup，迁移自原粗筛引擎）逐只拉 K 线 → 调 M3 指标引擎算 MA5/10/20/30/60 → upsert `stock_indicator_snapshots`。单只失败跳过不中断，`ctx` 取消即时退出。
 - **逐历史交易日指标快照（point-in-time，回测友好）**：`stock_indicator_snapshots` 以 `(market, code, trade_date)` 为唯一键，每个历史交易日一行。扫描支持两种模式：
@@ -547,6 +585,8 @@ c.AddFunc(job.CronExpr /*默认 "0 0 17 * * *"*/, func() {
 
   - **分批 + 限速**：把全市场代码切成 `batch_size=20` 一批，批间 sleep 限速，批内 `concurrency=10` 并发，规避数据源限频/封禁。
   - **断点续跑**：`update_job_runs.processed` 记进度，失败批重试；进程重启可从 watermark 续跑（天然幂等：upsert + 水位）。
+  - **同类型排队（FIFO）**：手动触发 / 定时触发统一走 `JobRunner.Submit`。若同 `job_type` 已有 `running`，新作业落 `status=waiting` 入队而非并行启动；当前作业终态后 `promoteNext` 自动提升队首 waiting 执行。`waiting` 作业可被用户取消（无执行 goroutine，直接置 `canceled`）。`update_job_runs` 增加 `job_type`/`market` 字段以支撑队列定位与接力执行。
+  - **启动恢复**：进程启动先把残留 `running` 置 `failed`（孤儿清理），再对存在 `waiting` 的每个类型 `ResumeWaiting` 提升队首，避免重启后队列卡死。
 - **交易日历**：自维护表为主（按年导入交易所休市安排），每次增量更新用「实际拉到的 K 线最大日期」反推校正 `trading_calendars`（`source='inferred'`），补漏临时休市。
 
 ### M3 技术指标计算
@@ -600,6 +640,7 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 | 模块 | 测试重点 | 类型 |
 |------|---------|------|
 | M1 适配 | mapper 量纲换算、工厂选源、降级链、stub | 单元 |
+| M1 连接池 | 健康连接复用、坏连接/ panic 丢弃重建、配额守恒、ctx 取消（`gotdx_pool_test.go`，`-tags gotdx`） | 单元 |
 | M2 增量 | 水位推进、仅取水位后数据、幂等 upsert、批次切分、ctx 取消退出 | 单元 |
 | M2 调度 | 交易日历感知（非交易日跳过）、分批限速、续跑 | 单元 + 集成 |
 | M2 扫描 | 全市场并发不中断、指标快照落库 | 单元 |

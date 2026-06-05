@@ -181,7 +181,9 @@ interface IAuthState {
 
 ### 4.4 作业进度轮询（hooks/use-polling-query）
 
-封装 TanStack Query 的 `refetchInterval`：作业 `status==='running'` 时每 2s 轮询 `/admin/jobs/runs/:runId`，结束后停止。
+封装 TanStack Query 的 `refetchInterval`：当前跟踪作业 `status` 为 `running`/`waiting` 时每 2s 轮询 `/admin/jobs/runs/:runId`，进入终态后停止。
+
+作业页列表轮询：作业列表 `/admin/jobs` 每 30s 刷新；执行记录 `/admin/jobs/runs` 每 10s 刷新（与单条进度的 2s 高频轮询区分，降低空闲请求量）。
 
 ---
 
@@ -196,7 +198,8 @@ interface IAuthState {
 | `/credentials` | 凭证列表与管理 | M5/M6 | 需登录 |
 | `/credentials/:id` | 凭证详情 + 调用审计 | M5/M6 | 需登录 |
 | `/market` | 行情中心（大盘指数概览） | M6 | 需登录 |
-| `/market/quote` | 个股行情（搜索 → 快照 + K 线 + 均线 + 指标） | M6 | 需登录 |
+| `/market/quote` | 个股行情搜索（搜索 → 点击结果跳转详情） | M6 | 需登录 |
+| `/market/quote/:code` | 个股行情详情（快照 + K 线 + 均线 + 指标） | M6 | 需登录 |
 | `/ops/datasources` | 数据源管理与健康 | M1/M6 | 需登录 |
 | `/ops/jobs` | 更新作业配置与执行记录 | M2/M6 | 需登录 |
 
@@ -226,10 +229,11 @@ interface IAuthState {
 ### 6.3 行情展示（features/market）
 
 - **大盘指数**：`/market` 卡片网格展示指数（现价、涨跌额、涨跌幅，涨跌色由 `changeColor`）。
-- **个股行情**：`/market/quote` 搜索框（`GET /admin/market/search`）→ 选中后展示：
-  - 个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时显示「数据延迟」徽标）。
-  - **K 线图**（`kline-chart`，lightweight-charts）：日/周/月切换 + 复权切换；叠加 **MA5/MA10/MA20/MA30/MA60** 五条均线（数据来自指标接口）。
-  - 指标面板：展示当前 MA5~MA60 数值。
+- **个股行情搜索**：`/market/quote` 搜索框（`GET /admin/market/search`）→ 点击结果 `navigate` 跳转 `/market/quote/:code` 详情页（不再内联展示）。导航项 `end:false`，详情页下「个股行情」保持高亮。
+- **个股行情详情**：`/market/quote/:code` 按路由 `code` 拉取数据，三态处理：
+  - **加载中**：拉取快照时展示 Loading（spinner + 提示）。
+  - **错误 / 无数据**：股票不存在或拉取失败时展示错误卡片与「返回搜索」入口。
+  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加）+ 指标面板。
 
 ### 6.4 运维（features/ops）
 
@@ -238,7 +242,8 @@ interface IAuthState {
   - 作业配置表单：cron 表达式（默认 `0 0 17 * * *`）、分批大小（默认 20）、并发度（默认 10）、启停 → `PUT /admin/jobs/:id`。
   - 手动触发：选择类型（全量/增量/快照/指标）+ 市场 + 可选代码 → `POST /admin/jobs/:id/run`，返回 runId 后跳到进度视图。
   - 执行记录：`GET /admin/jobs/runs` 分页表格；运行中行用 `use-polling-query` 轮询进度条（processed/total）；可取消运行中作业。
-  - 数据新鲜度：`GET /admin/freshness` 展示「全市场更新到哪个交易日 / 最近扫描时间 / 证券数」。
+  - 编辑作业：每个作业卡片提供「编辑」按钮，弹窗修改名称 / 市场 / cron / 分批 / 并发 / 启停（`job_type` 只读）；`cron_expr` 前端粗校验 + 服务端 `PUT /admin/jobs/:id` 权威校验，错误信息回显弹窗。
+  - 数据新鲜度：`GET /admin/freshness` 展示「全市场更新到哪个交易日 / 最近扫描时间 / 证券数 / 行情数据覆盖率（已入库股票数 ÷ 证券总数）」。
 
 ---
 

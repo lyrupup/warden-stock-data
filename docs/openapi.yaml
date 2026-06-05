@@ -240,7 +240,10 @@ paths:
   /admin/jobs/{id}:
     put:
       tags: [DataSources]
-      summary: 配置作业（cron / 分批 / 并发 / 启停）
+      summary: 配置作业（名称 / 市场 / cron / 分批 / 并发 / 启停）
+      description: |
+        修改作业配置。job_type 与创建/更新时间字段不可修改，其余字段均可改（按需传入）。
+        cron_expr 会按调度器使用的 6 段（含秒）格式做服务端校验，不合法返回 400。
       security: [{ AdminJWT: [] }]
       parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
       requestBody:
@@ -250,17 +253,21 @@ paths:
             schema:
               type: object
               properties:
-                cron_expr: { type: string, example: "0 0 17 * * *" }
-                batch_size: { type: integer, example: 20 }
-                concurrency: { type: integer, example: 10 }
+                name: { type: string, example: "A股每日增量更新" }
+                market: { type: string, example: CN }
+                cron_expr: { type: string, example: "0 0 17 * * *", description: "6 段含秒格式，服务端校验" }
+                batch_size: { type: integer, example: 20, description: "必须 > 0" }
+                concurrency: { type: integer, example: 10, description: "必须 > 0" }
                 enabled: { type: boolean }
       responses:
         "200": { $ref: "#/components/responses/OK" }
+        "400": { description: "参数错误，如 cron_expr 格式不合法 / batch_size / concurrency 非正" }
 
   /admin/jobs/{id}/run:
     post:
       tags: [DataSources]
       summary: 手动触发一次更新作业
+      description: 作业 `enabled=false` 时拒绝触发，返回 400。
       security: [{ AdminJWT: [] }]
       parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
       requestBody:
@@ -270,24 +277,26 @@ paths:
             schema:
               type: object
               properties:
-                type: { type: string, enum: [full, incremental, snapshot, indicator], default: incremental }
+                type: { type: string, enum: [full, incremental, snapshot, indicator, securities], default: incremental, description: "securities：仅同步证券列表（轻量，不拉 K 线）；incremental：按 watermark 仅更新落后标的" }
                 market: { type: string, default: CN }
-                codes: { type: array, items: { type: string }, description: "为空表示全市场" }
+                codes: { type: array, items: { type: string }, description: "为空表示全市场；增量类型留空时按 watermark 自动筛待更新" }
       responses:
         "200":
-          description: 已派发
+          description: |
+            已派发。若同类型作业已在运行，则本次进入排队（status=waiting），
+            待前序同类型作业完成后自动执行；waiting 作业可通过取消接口撤销。
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
                   - properties:
-                      data: { type: object, properties: { runId: { type: integer } } }
-        "409":
-          description: 已有同类作业运行中
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ApiResponse" }
+                      data:
+                        type: object
+                        properties:
+                          runId: { type: integer }
+                          status: { type: string, enum: [running, waiting] }
+        "400": { description: 作业已停用，无法手动触发 }
 
   /admin/jobs/runs:
     get:
@@ -373,6 +382,7 @@ paths:
     get:
       tags: [AdminMarket]
       summary: 股票搜索（管理后台只读）
+      description: 按代码/名称模糊匹配，优先查本地 securities 表（trgm 索引）；库内无数据时回源行情提供方。
       security: [{ AdminJWT: [] }]
       parameters:
         - { in: query, name: kw, required: true, schema: { type: string } }
@@ -745,7 +755,7 @@ components:
       properties:
         id: { type: integer }
         name: { type: string }
-        job_type: { type: string, enum: [full, incremental, snapshot, indicator] }
+        job_type: { type: string, enum: [full, incremental, snapshot, indicator, securities] }
         market: { type: string, example: CN }
         cron_expr: { type: string, example: "0 0 17 * * *" }
         batch_size: { type: integer, example: 20 }
@@ -757,7 +767,9 @@ components:
       properties:
         id: { type: integer }
         job_id: { type: integer }
-        status: { type: string, enum: [running, done, failed, canceled] }
+        job_type: { type: string, enum: [full, incremental, snapshot, indicator, securities] }
+        market: { type: string, example: CN }
+        status: { type: string, enum: [waiting, running, done, failed, canceled], description: "waiting：同类型已有运行中作业，排队等待；可被取消" }
         total: { type: integer }
         processed: { type: integer }
         succeeded: { type: integer }
@@ -774,6 +786,7 @@ components:
         kline_updated_to: { type: string, format: date }
         last_scan_at: { type: string, format: date-time, nullable: true }
         securities_count: { type: integer }
+        kline_stock_count: { type: integer, description: "库中已落库行情数据的股票数量（已从数据源拉取覆盖度）" }
 
     IndexQuote:
       type: object
