@@ -33,6 +33,10 @@ func (c *QuoteCache) Get(ctx context.Context, key string, dest interface{}) (boo
 }
 
 func (c *QuoteCache) Set(ctx context.Context, key string, value interface{}) error {
+	return c.SetWithTTL(ctx, key, value, c.ttl)
+}
+
+func (c *QuoteCache) SetWithTTL(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	if c == nil || c.client == nil {
 		return nil
 	}
@@ -40,7 +44,10 @@ func (c *QuoteCache) Set(ctx context.Context, key string, value interface{}) err
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, key, b, c.ttl).Err()
+	if ttl <= 0 {
+		ttl = c.ttl
+	}
+	return c.client.Set(ctx, key, b, ttl).Err()
 }
 
 func QuoteKey(market, kind, code string) string {

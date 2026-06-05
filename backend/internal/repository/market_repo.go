@@ -2,7 +2,10 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -51,6 +54,25 @@ func (r *KlineRepository) List(ctx context.Context, market, code, adjust string,
 	return bars, err
 }
 
+func (r *KlineRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
+	var t sql.NullTime
+	err := r.db.WithContext(ctx).Model(&model.StockDailyKline{}).
+		Where("market = ?", market).Select("MAX(trade_date)").Scan(&t).Error
+	if err != nil || !t.Valid {
+		return nil, err
+	}
+	return &t.Time, nil
+}
+
+// DistinctStockCount 统计库中已存在日 K 数据的不同股票数量（衡量已从数据源拉取覆盖度）。
+func (r *KlineRepository) DistinctStockCount(ctx context.Context, market string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.StockDailyKline{}).
+		Where("market = ?", market).
+		Distinct("stock_code").Count(&count).Error
+	return count, err
+}
+
 type QuoteRepository struct{ db *gorm.DB }
 
 func NewQuoteRepository(db *gorm.DB) *QuoteRepository { return &QuoteRepository{db: db} }
@@ -80,6 +102,20 @@ func (r *QuoteRepository) SaveIndexQuotes(ctx context.Context, quotes []model.In
 		return nil
 	}
 	return r.db.WithContext(ctx).Create(&quotes).Error
+}
+
+// LatestIndexQuotes 返回各指数最新一条快照，用于 Redis 未命中时快速回源。
+func (r *QuoteRepository) LatestIndexQuotes(ctx context.Context, market string) ([]model.IndexQuote, error) {
+	sub := r.db.WithContext(ctx).Model(&model.IndexQuote{}).
+		Select("index_code, MAX(snapshot_at) as snapshot_at").
+		Where("market = ?", market).
+		Group("index_code")
+	var quotes []model.IndexQuote
+	err := r.db.WithContext(ctx).Table("index_quotes iq").
+		Joins("INNER JOIN (?) latest ON iq.index_code = latest.index_code AND iq.snapshot_at = latest.snapshot_at", sub).
+		Where("iq.market = ?", market).
+		Find(&quotes).Error
+	return quotes, err
 }
 
 type IndicatorRepository struct{ db *gorm.DB }
@@ -114,13 +150,13 @@ func (r *IndicatorRepository) GetSnapshots(ctx context.Context, market string, c
 }
 
 func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
-	var t time.Time
+	var t sql.NullTime
 	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
 		Where("market = ?", market).Select("MAX(trade_date)").Scan(&t).Error
-	if err != nil || t.IsZero() {
+	if err != nil || !t.Valid {
 		return nil, err
 	}
-	return &t, nil
+	return &t.Time, nil
 }
 
 type SecurityRepository struct{ db *gorm.DB }
@@ -137,18 +173,98 @@ func (r *SecurityRepository) UpsertBatch(ctx context.Context, secs []model.Secur
 	}).CreateInBatches(secs, 500).Error
 }
 
+// NamesByCodes 批量查询证券名称，供行情接口补全 stock_name。
+func (r *SecurityRepository) NamesByCodes(ctx context.Context, market string, codes []string) (map[string]string, error) {
+	if len(codes) == 0 {
+		return map[string]string{}, nil
+	}
+	var secs []model.Security
+	if err := r.db.WithContext(ctx).
+		Select("code", "name").
+		Where("market = ? AND code IN ?", market, codes).
+		Find(&secs).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(secs))
+	for _, s := range secs {
+		if s.Name != "" {
+			out[s.Code] = s.Name
+		}
+	}
+	return out, nil
+}
+
 func (r *SecurityRepository) List(ctx context.Context, market string) ([]model.Security, error) {
 	var list []model.Security
 	err := r.db.WithContext(ctx).Where("market = ? AND status = 1", market).Order("code asc").Find(&list).Error
 	return list, err
 }
 
+func (r *SecurityRepository) Count(ctx context.Context, market string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.Security{}).
+		Where("market = ? AND status = 1", market).Count(&count).Error
+	return count, err
+}
+
 func (r *SecurityRepository) Search(ctx context.Context, market, kw string) ([]model.Security, error) {
+	kw = strings.TrimSpace(kw)
+	if kw == "" {
+		return nil, nil
+	}
+	// 转义 LIKE 通配符，避免用户输入的 % / _ 被当作模式匹配。
+	pattern := "%" + likeEscape(kw) + "%"
 	var list []model.Security
-	pattern := "%" + kw + "%"
-	err := r.db.WithContext(ctx).Where("market = ? AND status = 1 AND (code ILIKE ? OR name ILIKE ?)", market, pattern, pattern).
-		Limit(50).Find(&list).Error
-	return list, err
+	err := r.db.WithContext(ctx).
+		Where(`market = ? AND status = 1 AND (code ILIKE ? ESCAPE '\' OR name ILIKE ? ESCAPE '\')`, market, pattern, pattern).
+		Order("code asc").Limit(50).Find(&list).Error
+	if err != nil {
+		return nil, err
+	}
+	// 命中优先级：精确代码 > 代码前缀 > 代码包含 > 仅名称命中。
+	rankSecurities(list, strings.ToLower(kw))
+	return list, nil
+}
+
+// EnsureSearchIndexes 幂等创建证券搜索所需的 pg_trgm 扩展与 GIN 索引，
+// 使 code/name 的 ILIKE '%kw%' 模糊搜索走索引而非全表扫描。
+// 针对已有库（init.sql 仅首次初始化时执行），启动时调用以补齐索引。
+func (r *SecurityRepository) EnsureSearchIndexes(ctx context.Context) error {
+	stmts := []string{
+		"CREATE EXTENSION IF NOT EXISTS pg_trgm",
+		"CREATE INDEX IF NOT EXISTS idx_securities_code_trgm ON securities USING gin (code gin_trgm_ops)",
+		"CREATE INDEX IF NOT EXISTS idx_securities_name_trgm ON securities USING gin (name gin_trgm_ops)",
+	}
+	for _, s := range stmts {
+		if err := r.db.WithContext(ctx).Exec(s).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func likeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+func rankSecurities(list []model.Security, kwLower string) {
+	sort.SliceStable(list, func(i, j int) bool {
+		return secRank(list[i], kwLower) < secRank(list[j], kwLower)
+	})
+}
+
+func secRank(s model.Security, kwLower string) int {
+	code := strings.ToLower(s.Code)
+	switch {
+	case code == kwLower:
+		return 0
+	case strings.HasPrefix(code, kwLower):
+		return 1
+	case strings.Contains(code, kwLower):
+		return 2
+	default:
+		return 3
+	}
 }
 
 type CalendarRepository struct{ db *gorm.DB }
@@ -193,6 +309,22 @@ func (r *WatermarkRepository) Get(ctx context.Context, market, code string) (*mo
 		return &model.UpdateWatermark{Market: market, StockCode: code}, nil
 	}
 	return &wm, err
+}
+
+// MapByMarket 一次性读取某市场全部股票水位，返回 code -> last_trade_date。
+// 用于增量更新前批量判定哪些标的落后于全市场最新交易日，避免逐只查询。
+func (r *WatermarkRepository) MapByMarket(ctx context.Context, market string) (map[string]time.Time, error) {
+	var wms []model.UpdateWatermark
+	if err := r.db.WithContext(ctx).Where("market = ?", market).Find(&wms).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(wms))
+	for _, w := range wms {
+		if w.LastTradeDate != nil {
+			out[w.StockCode] = *w.LastTradeDate
+		}
+	}
+	return out, nil
 }
 
 func (r *WatermarkRepository) Upsert(ctx context.Context, market, code string, last time.Time) error {
