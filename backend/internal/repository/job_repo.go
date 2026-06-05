@@ -185,11 +185,11 @@ func (r *JobRepository) UpdateDataSource(ctx context.Context, ds *model.DataSour
 }
 
 // EnsureDefaultDataSource 保证存在与当前配置 provider 对应的默认数据源。
-// 兼容历史库：若仅有一条旧默认源（如 stub），则就地校正其 source/name，
+// 兼容历史库：若仅有一条旧默认源，则就地校正其 source/name，
 // 同时保留 enabled/priority/config/health 等用户可调整字段。
 func (r *JobRepository) EnsureDefaultDataSource(ctx context.Context, source string) error {
 	if source == "" {
-		source = "stub"
+		source = "gotdx"
 	}
 	name := dataSourceName(source)
 
@@ -224,8 +224,6 @@ func dataSourceName(source string) string {
 	switch source {
 	case "gotdx":
 		return "通达信 gotdx 行情源"
-	case "stub":
-		return "Stub 行情源"
 	default:
 		return source + " 行情源"
 	}

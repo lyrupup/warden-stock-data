@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 	v.SetDefault("REDIS_PORT", 6379)
 	v.SetDefault("REDIS_PASSWORD", "")
 	v.SetDefault("REDIS_DB", 0)
-	v.SetDefault("MARKET_PROVIDER", "stub")
+	v.SetDefault("MARKET_PROVIDER", "gotdx")
 	v.SetDefault("REQUEST_TIMEOUT_SEC", 30)
 
 	cfg := &Config{

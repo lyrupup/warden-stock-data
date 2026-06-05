@@ -1,5 +1,3 @@
-//go:build gotdx
-
 package market
 
 import (

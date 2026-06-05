@@ -51,7 +51,7 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 > 详见 PRD 第 7 章与 BACKEND.md，遵循项目 `AGENTS.md` 规范。
 
 - **后端**：Go + Gin + GORM；中间件含限流 / 超时（context）/ CORS / 日志 / 双鉴权（Admin JWT + HMAC 凭证）；TDD 测试先行。
-- **数据源**：`IMarketProvider` 适配器；A 股 gotdx（`-tags gotdx` 注入，默认回退 stub）；预留 Tushare / 港美股源。
+- **数据源**：`IMarketProvider` 适配器；A 股 gotdx（通达信，唯一行情源）；预留 Tushare / 港美股源。
 - **存储**：PostgreSQL（K 线 / 快照 / 指标快照 / 凭证 / 作业 / 交易日历）+ Redis（缓存 / 限流 / 配额 / nonce）。
 - **调度**：robfig/cron，盘后定时分批增量更新，交易日历感知。
 - **前端**：React + Vite + shadcn/ui + Tailwind CSS，ky + TanStack Query，zustand，lightweight-charts，Light/Dark 主题。
@@ -78,7 +78,7 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 # 1. 启动基础设施
 cd backend/deploy && docker compose up -d postgres redis
 
-# 2. 启动 API 服务（默认 stub 行情源，无需 gotdx）
+# 2. 启动 API 服务（gotdx 行情源，需可访问通达信节点）
 cd backend
 cp .env.example .env   # 可按需修改
 make tidy && make run

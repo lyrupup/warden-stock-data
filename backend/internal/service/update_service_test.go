@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warden-stock/warden-stock-data/internal/model"
+	"github.com/warden-stock/warden-stock-data/internal/service"
 )
 
 func TestFilterAfterWatermark(t *testing.T) {

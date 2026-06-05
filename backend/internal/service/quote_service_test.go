@@ -6,14 +6,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/warden-stock/warden-stock-data/internal/integration/market"
 	"github.com/warden-stock/warden-stock-data/internal/model"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 )
 
 // secRepo 为 nil 时（如未接库），Search 应回源行情提供方并返回结果。
 func TestQuoteSearchProviderFallback(t *testing.T) {
-	svc := service.NewQuoteService(market.NewStubProvider(), nil, nil, nil)
+	svc := service.NewQuoteService(newFakeProvider(), nil, nil, nil)
 	res, err := svc.Search(context.Background(), "600")
 	require.NoError(t, err)
 	require.NotEmpty(t, res)
@@ -35,7 +34,7 @@ func TestEnrichQuoteNames(t *testing.T) {
 }
 
 func TestQuoteSearchEmptyKeyword(t *testing.T) {
-	svc := service.NewQuoteService(market.NewStubProvider(), nil, nil, nil)
+	svc := service.NewQuoteService(newFakeProvider(), nil, nil, nil)
 	_, err := svc.Search(context.Background(), "   ")
 	require.Error(t, err)
 }

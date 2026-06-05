@@ -1,14 +1,18 @@
 package market
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
-// NewProvider returns the configured market provider. Build with `-tags gotdx` for real gotdx.
+// NewProvider 返回行情源 provider。目前仅支持 gotdx（通达信），不再有 stub 回退。
+// providerName 仅作多源扩展占位，当前未参与选型。
 func NewProvider(providerName string) IMarketProvider {
-	if name := os.Getenv("MARKET_PROVIDER"); name != "" {
-		providerName = name
+	maxConn := 10
+	if v := os.Getenv("MARKET_GOTDX_MAX_CONN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConn = n
+		}
 	}
-	if p := initGotdxIfNeeded(providerName); p != nil {
-		return NewFallbackProvider(p, NewStubProvider())
-	}
-	return NewStubProvider()
+	return NewGotdxProvider(maxConn)
 }

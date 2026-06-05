@@ -66,7 +66,7 @@ backend/
 │   ├── dto/                   # request/ response/
 │   ├── middleware/            # adminauth hmacauth ratelimit quota timeout logger cors recovery
 │   ├── integration/
-│   │   └── market/            # provider.go(接口) gotdx_*.go stub_provider.go factory.go
+│   │   └── market/            # provider.go(接口) gotdx_*.go factory.go
 │   ├── indicator/             # indicator.go(接口+注册) ma.go 迁移因子 catalog.go
 │   ├── scheduler/             # cron.go job_runner.go(分批/限速/续跑)
 │   ├── mock/                  # mockgen 生成
@@ -505,7 +505,7 @@ func NewProvider(market string, sources []DataSourceConfig) IMarketProvider {
 ```
 
 - **gotdx 适配器**：`gotdx_pool.go`（连接池，见下）、`gotdx_provider.go`（`safeCall` 防 panic、懒加载证券名索引、`withClient(ctx, fn)` 借池执行）、`gotdx_mapper.go`（价格 /100、/1000 量纲还原，换手率 /10000）。`StockList` 基于 `StockAll(market)` 并过滤为 A 股个股。
-- **stub 适配器**：无 gotdx/无网络时返回示例数据，保证可编译可测（`-tags gotdx` 控制真实实现注入）。
+- **单元测试**：以测试内置的 fake provider（`internal/service/fake_provider_test.go`）注入确定性行情数据，不依赖外部网络。
 - **扩展**：新增市场/源 = 新增实现 `IMarketProvider` 的适配器 + 工厂注册，零侵入 M2/M3/M4。
 
 #### gotdx 连接池（`internal/integration/market/gotdx_pool.go`）
@@ -639,8 +639,8 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 
 | 模块 | 测试重点 | 类型 |
 |------|---------|------|
-| M1 适配 | mapper 量纲换算、工厂选源、降级链、stub | 单元 |
-| M1 连接池 | 健康连接复用、坏连接/ panic 丢弃重建、配额守恒、ctx 取消（`gotdx_pool_test.go`，`-tags gotdx`） | 单元 |
+| M1 适配 | mapper 量纲换算、工厂选源、连接池复用 | 单元 |
+| M1 连接池 | 健康连接复用、坏连接/ panic 丢弃重建、配额守恒、ctx 取消（`gotdx_pool_test.go`） | 单元 |
 | M2 增量 | 水位推进、仅取水位后数据、幂等 upsert、批次切分、ctx 取消退出 | 单元 |
 | M2 调度 | 交易日历感知（非交易日跳过）、分批限速、续跑 | 单元 + 集成 |
 | M2 扫描 | 全市场并发不中断、指标快照落库 | 单元 |
@@ -704,7 +704,7 @@ PG_HOST=localhost PG_PORT=5432 PG_USER=postgres PG_PASSWORD=postgres PG_DB=warde
 REDIS_HOST=localhost REDIS_PORT=6379 REDIS_PASSWORD= REDIS_DB=0
 
 # 行情数据源
-MARKET_PROVIDER=gotdx                # gotdx(主力)；默认构建回退 stub
+MARKET_PROVIDER=gotdx                # gotdx(通达信，唯一行情源)
 MARKET_GOTDX_MAX_CONN=10             # gotdx 连接池（与扫描并发对齐）
 
 # 盘后定时更新默认（可被 DB job 配置覆盖）
