@@ -30,13 +30,13 @@ export const DashboardPage = () => {
       />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               最新交易日
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col">
             <div className="text-2xl font-bold">
               {freshness?.latest_trade_date ?? "—"}
             </div>
@@ -46,29 +46,36 @@ export const DashboardPage = () => {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               证券数量
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col">
             <div className="text-2xl font-bold">
               {freshness?.securities_count?.toLocaleString() ?? "—"}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               最近扫描 {formatDateTime(freshness?.last_scan_at)}
             </p>
+            <Button
+              asChild
+              variant="link"
+              className="mt-auto h-auto self-start p-0 pt-2 text-xs"
+            >
+              <Link to="/market">查看大盘 →</Link>
+            </Button>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               行情数据覆盖
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col">
             <div className="text-2xl font-bold">
               {coveragePct !== null ? `${coveragePct}%` : "—"}
             </div>
@@ -76,20 +83,31 @@ export const DashboardPage = () => {
               已入库 {klineStockCount.toLocaleString()} /{" "}
               {securitiesCount.toLocaleString()} 只
             </p>
+            <Button
+              asChild
+              variant="link"
+              className="mt-auto h-auto self-start p-0 pt-2 text-xs"
+            >
+              <Link to="/market/quote">查看个股 →</Link>
+            </Button>
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               数据源健康
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-1 flex-col">
             <div className="text-2xl font-bold">
               {healthyCount}/{totalSources}
             </div>
-            <Button asChild variant="link" className="h-auto p-0 text-xs">
+            <Button
+              asChild
+              variant="link"
+              className="mt-auto h-auto self-start p-0 pt-2 text-xs"
+            >
               <Link to="/ops/datasources">查看详情 →</Link>
             </Button>
           </CardContent>
