@@ -15,6 +15,13 @@ export const DashboardPage = () => {
     datasources?.filter((d) => d.health === "ok").length ?? 0;
   const totalSources = datasources?.length ?? 0;
 
+  const klineStockCount = freshness?.kline_stock_count ?? 0;
+  const securitiesCount = freshness?.securities_count ?? 0;
+  const coveragePct =
+    securitiesCount > 0
+      ? ((klineStockCount / securitiesCount) * 100).toFixed(1)
+      : null;
+
   return (
     <>
       <PageHeader
@@ -22,7 +29,7 @@ export const DashboardPage = () => {
         description="数据新鲜度、数据源健康与近期作业"
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -51,6 +58,23 @@ export const DashboardPage = () => {
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               最近扫描 {formatDateTime(freshness?.last_scan_at)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              行情数据覆盖
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {coveragePct !== null ? `${coveragePct}%` : "—"}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              已入库 {klineStockCount.toLocaleString()} /{" "}
+              {securitiesCount.toLocaleString()} 只
             </p>
           </CardContent>
         </Card>

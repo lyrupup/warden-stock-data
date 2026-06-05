@@ -24,6 +24,8 @@ export const opsApi = {
   updateJob: (
     id: number,
     body: {
+      name?: string;
+      market?: string;
       cron_expr?: string;
       batch_size?: number;
       concurrency?: number;
@@ -39,7 +41,7 @@ export const opsApi = {
       codes?: string[];
     },
   ) =>
-    getData<{ runId: number }>(
+    getData<{ runId: number; status: TJobRun["status"] }>(
       httpClient.post(`jobs/${id}/run`, { json: body }),
     ),
 

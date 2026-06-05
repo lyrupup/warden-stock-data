@@ -30,6 +30,7 @@ export const useJobs = () =>
   useQuery({
     queryKey: opsKeys.jobs(),
     queryFn: opsApi.jobs,
+    refetchInterval: 30000,
   });
 
 export const useUpdateJob = () => {
@@ -40,6 +41,8 @@ export const useUpdateJob = () => {
       ...body
     }: {
       id: number;
+      name?: string;
+      market?: string;
       cron_expr?: string;
       batch_size?: number;
       concurrency?: number;
@@ -69,7 +72,7 @@ export const useJobRuns = (page: number, size: number) =>
   useQuery({
     queryKey: opsKeys.jobRuns(page, size),
     queryFn: () => opsApi.jobRuns(page, size),
-    refetchInterval: 5000,
+    refetchInterval: 10000,
   });
 
 export const useJobRunPolling = (runId: number | null) =>
@@ -77,7 +80,8 @@ export const useJobRunPolling = (runId: number | null) =>
     queryKey: opsKeys.jobRun(runId ?? 0),
     queryFn: () => opsApi.jobRun(runId!),
     enabled: runId !== null && runId > 0,
-    shouldPoll: (data) => data?.status === "running",
+    shouldPoll: (data) =>
+      data?.status === "running" || data?.status === "waiting",
     intervalMs: 2000,
   });
 

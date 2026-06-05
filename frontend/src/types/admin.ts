@@ -47,7 +47,7 @@ export type TDataSource = {
 export type TUpdateJob = {
   id: number;
   name: string;
-  job_type: "full" | "incremental" | "snapshot" | "indicator";
+  job_type: "full" | "incremental" | "snapshot" | "indicator" | "securities";
   market: string;
   cron_expr: string;
   batch_size: number;
@@ -58,7 +58,9 @@ export type TUpdateJob = {
 export type TJobRun = {
   id: number;
   job_id: number;
-  status: "running" | "done" | "failed" | "canceled";
+  job_type: string;
+  market: string;
+  status: "waiting" | "running" | "done" | "failed" | "canceled";
   total: number;
   processed: number;
   succeeded: number;
@@ -74,6 +76,7 @@ export type TFreshness = {
   kline_updated_to: string;
   last_scan_at: string | null;
   securities_count: number;
+  kline_stock_count: number;
 };
 
 export type TCreateCredentialReq = {
