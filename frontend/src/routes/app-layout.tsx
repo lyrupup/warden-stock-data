@@ -28,6 +28,15 @@ const navItems = [
 
 const appTitle = import.meta.env.VITE_APP_TITLE ?? "守望者";
 
+/** 全局应用图标（与浏览器 favicon 同源 /favicon.png），统一以图片展示 logo。 */
+const AppLogo = ({ className }: { className?: string }) => (
+  <img
+    src="/favicon.png"
+    alt="logo"
+    className={cn("h-6 w-6 shrink-0", className)}
+  />
+);
+
 /** 桌面侧边栏与移动端浮层共用同一份导航；onNavigate 用于移动端点击后关闭浮层。 */
 const NavItems = ({ onNavigate }: { onNavigate?: () => void }) => (
   <nav className="space-y-1 p-3">
@@ -63,7 +72,8 @@ export const AppLayout = () => {
   return (
     <div className="flex min-h-screen">
       <aside className="hidden w-56 shrink-0 border-r bg-card md:block">
-        <div className="flex h-14 items-center border-b px-4 font-semibold">
+        <div className="flex h-14 items-center gap-2 border-b px-4 font-semibold">
+          <AppLogo />
           {appTitle}
         </div>
         <NavItems />
@@ -88,7 +98,8 @@ export const AppLayout = () => {
                   aria-describedby={undefined}
                   className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-card shadow-lg duration-300 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left md:hidden"
                 >
-                  <DialogPrimitive.Title className="flex h-14 items-center border-b px-4 font-semibold">
+                  <DialogPrimitive.Title className="flex h-14 items-center gap-2 border-b px-4 font-semibold">
+                    <AppLogo />
                     导航菜单
                   </DialogPrimitive.Title>
                   {/* 点击任一导航项跳转后关闭浮层 */}
@@ -96,7 +107,10 @@ export const AppLayout = () => {
                 </DialogPrimitive.Content>
               </DialogPrimitive.Portal>
             </DialogPrimitive.Root>
-            <span className="font-semibold text-sm">{appTitle}</span>
+            <span className="flex items-center gap-1.5 font-semibold text-sm">
+              <AppLogo className="h-5 w-5" />
+              {appTitle}
+            </span>
           </div>
           <div className="flex items-center gap-2 ml-auto">
             <span className="hidden text-sm text-muted-foreground sm:inline">

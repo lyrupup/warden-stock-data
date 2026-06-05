@@ -43,6 +43,11 @@ export const LoginPage = () => {
     <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
+          <img
+            src="/favicon.png"
+            alt="logo"
+            className="mx-auto mb-2 h-12 w-12"
+          />
           <CardTitle>{import.meta.env.VITE_APP_TITLE ?? "守望者行情数据后台"}</CardTitle>
           <CardDescription>管理员登录</CardDescription>
         </CardHeader>
