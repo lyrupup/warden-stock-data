@@ -74,6 +74,15 @@ func Setup(mode string, deps Deps) *gin.Engine {
 			authed.GET("/jobs/runs/:runId", jobH.GetRun)
 			authed.POST("/jobs/runs/:runId/cancel", jobH.CancelRun)
 			authed.GET("/freshness", jobH.Freshness)
+
+			market := authed.Group("/market")
+			{
+				market.GET("/indices", openH.Indices)
+				market.GET("/search", openH.Search)
+				market.GET("/stocks/:code", openH.Stock)
+				market.GET("/stocks/:code/kline", openH.Kline)
+				market.GET("/stocks/:code/indicators", openH.StockIndicators)
+			}
 		}
 	}
 

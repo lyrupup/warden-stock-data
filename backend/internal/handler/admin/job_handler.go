@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
 
-	"github.com/warden-stock/warden-stock-data/internal/model"
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 	"github.com/warden-stock/warden-stock-data/internal/scheduler"
 	"github.com/warden-stock/warden-stock-data/internal/service"
@@ -97,7 +96,10 @@ func (h *JobHandler) UpdateJob(c *gin.Context) {
 		response.Fail(c, http.StatusNotFound, errcode.ErrNotFound)
 		return
 	}
+	// job_type 与时间字段（created_at/updated_at）不可改；其余配置可改。
 	var req struct {
+		Name        *string `json:"name"`
+		Market      *string `json:"market"`
 		CronExpr    *string `json:"cron_expr"`
 		BatchSize   *int    `json:"batch_size"`
 		Concurrency *int    `json:"concurrency"`
@@ -108,12 +110,34 @@ func (h *JobHandler) UpdateJob(c *gin.Context) {
 		return
 	}
 	if req.CronExpr != nil {
+		if err := scheduler.ValidateCron(*req.CronExpr); err != nil {
+			response.FailWithMessage(c, http.StatusBadRequest, errcode.ErrParam, "cron 表达式格式错误："+err.Error())
+			return
+		}
 		job.CronExpr = *req.CronExpr
 	}
+	if req.Name != nil {
+		if *req.Name == "" {
+			response.FailWithMessage(c, http.StatusBadRequest, errcode.ErrParam, "作业名称不能为空")
+			return
+		}
+		job.Name = *req.Name
+	}
+	if req.Market != nil {
+		job.Market = *req.Market
+	}
 	if req.BatchSize != nil {
+		if *req.BatchSize <= 0 {
+			response.FailWithMessage(c, http.StatusBadRequest, errcode.ErrParam, "分批大小必须大于 0")
+			return
+		}
 		job.BatchSize = *req.BatchSize
 	}
 	if req.Concurrency != nil {
+		if *req.Concurrency <= 0 {
+			response.FailWithMessage(c, http.StatusBadRequest, errcode.ErrParam, "并发数必须大于 0")
+			return
+		}
 		job.Concurrency = *req.Concurrency
 	}
 	if req.Enabled != nil {
@@ -145,17 +169,20 @@ func (h *JobHandler) RunJob(c *gin.Context) {
 	if req.Market == "" {
 		req.Market = job.Market
 	}
-	run := &model.UpdateJobRun{
-		JobID: job.ID, Status: "running", StartedAt: time.Now(),
+	if !job.Enabled {
+		response.FailWithMessage(c, http.StatusBadRequest, errcode.ErrParam, "作业已停用，无法手动触发")
+		return
 	}
-	if err := h.jobRepo.CreateRun(c.Request.Context(), run); err != nil {
+	// Submit 内部完成「同类型已有 running → 进入 waiting，否则立即 running」的排队决策，
+	// 并以独立 context 异步执行（HTTP 请求 context 会在响应后取消）。
+	run, err := h.jobRunner.Submit(job, scheduler.RunOptions{
+		JobType: req.Type, Market: req.Market, Codes: req.Codes,
+	})
+	if err != nil {
 		response.Fail(c, http.StatusInternalServerError, errcode.ErrInternal)
 		return
 	}
-	go h.jobRunner.Run(c.Request.Context(), job, run, scheduler.RunOptions{
-		JobType: req.Type, Market: req.Market, Codes: req.Codes,
-	})
-	response.OK(c, gin.H{"runId": run.ID})
+	response.OK(c, gin.H{"runId": run.ID, "status": run.Status})
 }
 
 func (h *JobHandler) ListRuns(c *gin.Context) {
@@ -181,11 +208,20 @@ func (h *JobHandler) GetRun(c *gin.Context) {
 
 func (h *JobHandler) CancelRun(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("runId"), 10, 64)
-	h.jobRunner.Cancel(uint(id))
 	run, err := h.jobRepo.FindRun(c.Request.Context(), uint(id))
 	if err != nil {
 		response.Fail(c, http.StatusNotFound, errcode.ErrNotFound)
 		return
+	}
+	// 已是终态则幂等返回，避免覆盖已完成记录。
+	if run.Status != "running" && run.Status != "waiting" {
+		response.OK(c, nil)
+		return
+	}
+	// running：发出取消信号，由执行 goroutine 落终态并接力下一个 waiting。
+	// waiting：无执行 goroutine，直接置为 canceled（不影响队列其它作业）。
+	if run.Status == "running" {
+		h.jobRunner.Cancel(uint(id))
 	}
 	now := time.Now()
 	run.Status = "canceled"
