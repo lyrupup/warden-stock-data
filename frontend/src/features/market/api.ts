@@ -39,7 +39,7 @@ export const marketApi = {
       httpClient.get(`market/stocks/${code}/kline`, {
         searchParams: {
           period: opts.period ?? "day",
-          adjust: opts.adjust ?? "qfq",
+          adjust: opts.adjust === "none" ? "" : (opts.adjust ?? "qfq"),
           limit: opts.limit ?? 120,
           market: opts.market ?? "CN",
         },

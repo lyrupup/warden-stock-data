@@ -15,12 +15,12 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useThemeStore } from "@/stores/theme-store";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "概览" },
-  { to: "/credentials", icon: Key, label: "凭证管理" },
-  { to: "/market", icon: BarChart3, label: "行情中心" },
-  { to: "/market/quote", icon: Activity, label: "个股行情" },
-  { to: "/ops/datasources", icon: Database, label: "数据源" },
-  { to: "/ops/jobs", icon: Activity, label: "更新作业" },
+  { to: "/", icon: LayoutDashboard, label: "概览", end: true },
+  { to: "/credentials", icon: Key, label: "凭证管理", end: false },
+  { to: "/market", icon: BarChart3, label: "行情中心", end: true },
+  { to: "/market/quote", icon: Activity, label: "个股行情", end: false },
+  { to: "/ops/datasources", icon: Database, label: "数据源", end: false },
+  { to: "/ops/jobs", icon: Activity, label: "更新作业", end: false },
 ];
 
 export const AppLayout = () => {
@@ -36,11 +36,11 @@ export const AppLayout = () => {
           {import.meta.env.VITE_APP_TITLE ?? "守望者"}
         </div>
         <nav className="space-y-1 p-3">
-          {navItems.map(({ to, icon: Icon, label }) => (
+          {navItems.map(({ to, icon: Icon, label, end }) => (
             <NavLink
               key={to}
               to={to}
-              end={to === "/"}
+              end={end}
               className={({ isActive }) =>
                 cn(
                   "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",

@@ -1,7 +1,11 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { LoginPage } from "@/features/auth";
 import { CredentialDetailPage, CredentialsPage } from "@/features/credentials";
-import { MarketPage, StockQuotePage } from "@/features/market";
+import {
+  MarketPage,
+  StockQuoteDetailPage,
+  StockQuotePage,
+} from "@/features/market";
 import {
   DashboardPage,
   DatasourcesPage,
@@ -40,6 +44,7 @@ export const AppRouter = () => (
         <Route path="credentials/:id" element={<CredentialDetailPage />} />
         <Route path="market" element={<MarketPage />} />
         <Route path="market/quote" element={<StockQuotePage />} />
+        <Route path="market/quote/:code" element={<StockQuoteDetailPage />} />
         <Route path="ops/datasources" element={<DatasourcesPage />} />
         <Route path="ops/jobs" element={<JobsPage />} />
       </Route>

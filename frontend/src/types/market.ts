@@ -30,13 +30,16 @@ export type TStockQuote = {
 };
 
 export type TKline = {
-  date: string;
+  market?: string;
+  stock_code?: string;
+  trade_date: string;
   open: TDecimal;
   high: TDecimal;
   low: TDecimal;
   close: TDecimal;
   volume: TDecimal;
   amount: TDecimal;
+  adjust?: string;
 };
 
 export type TStockBrief = {
@@ -53,4 +56,5 @@ export type TIndicatorResult = {
 };
 
 export type EKlinePeriod = "day" | "week" | "month";
-export type EKlineAdjust = "" | "qfq" | "hfq";
+/** none=不复权，对应后端 adjust 空字符串 */
+export type EKlineAdjust = "none" | "qfq" | "hfq";
