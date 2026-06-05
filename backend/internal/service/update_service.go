@@ -128,6 +128,40 @@ func (s *UpdateService) SyncSecurities(ctx context.Context) error {
 	return s.secRepo.UpsertBatch(ctx, list)
 }
 
+// PendingCodes 在给定代码集合中筛出「需要增量更新」的标的：
+// 以全市场最新交易日（库内 K 线 MAX(trade_date)）为基准，
+// 保留无水位（新股/从未拉取）或水位早于最新交易日的股票。
+// 库为空（latest 为 nil）时视为首次全量，返回全部代码。
+func (s *UpdateService) PendingCodes(ctx context.Context, codes []string) ([]string, error) {
+	if s.klineRepo == nil || s.wmRepo == nil {
+		return codes, nil
+	}
+	latest, err := s.klineRepo.LatestTradeDate(ctx, s.market)
+	if err != nil || latest == nil {
+		return codes, nil
+	}
+	wmMap, err := s.wmRepo.MapByMarket(ctx, s.market)
+	if err != nil {
+		return codes, nil
+	}
+	return filterPendingCodes(codes, wmMap, latest), nil
+}
+
+// filterPendingCodes 纯函数：保留无水位或水位早于 latest 的代码。
+func filterPendingCodes(codes []string, wmMap map[string]time.Time, latest *time.Time) []string {
+	if latest == nil {
+		return codes
+	}
+	out := make([]string, 0, len(codes))
+	for _, c := range codes {
+		last, ok := wmMap[c]
+		if !ok || last.Before(*latest) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // LatestIndicatorDate returns max snapshot trade date for freshness.
 func (s *UpdateService) LatestIndicatorDate(ctx context.Context, indiRepo *repository.IndicatorRepository) (*time.Time, error) {
 	if indiRepo == nil {
