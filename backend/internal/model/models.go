@@ -149,6 +149,8 @@ func (UpdateJob) TableName() string { return "update_jobs" }
 type UpdateJobRun struct {
 	ID         uint       `gorm:"primarykey" json:"id"`
 	JobID      uint       `gorm:"not null;index:idx_job_runs_job" json:"job_id"`
+	JobType    string     `gorm:"size:16;not null;default:''" json:"job_type"`
+	Market     string     `gorm:"size:8;not null;default:CN" json:"market"`
 	Status     string     `gorm:"size:16;not null;default:running" json:"status"`
 	Total      int        `gorm:"not null;default:0" json:"total"`
 	Processed  int        `gorm:"not null;default:0" json:"processed"`

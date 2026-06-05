@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS securities (
     CONSTRAINT uni_securities_market_code UNIQUE (market, code)
 );
 
+-- 证券代码/名称模糊搜索（ILIKE '%kw%'）走 trgm GIN 索引，避免全表扫描。
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_securities_code_trgm ON securities USING gin (code gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_securities_name_trgm ON securities USING gin (name gin_trgm_ops);
+
 CREATE TABLE IF NOT EXISTS stock_daily_klines (
     id BIGSERIAL PRIMARY KEY,
     market VARCHAR(8) NOT NULL DEFAULT 'CN',
@@ -96,6 +101,8 @@ CREATE TABLE IF NOT EXISTS update_jobs (
 CREATE TABLE IF NOT EXISTS update_job_runs (
     id BIGSERIAL PRIMARY KEY,
     job_id BIGINT NOT NULL,
+    job_type VARCHAR(16) NOT NULL DEFAULT '',
+    market VARCHAR(8) NOT NULL DEFAULT 'CN',
     status VARCHAR(16) NOT NULL DEFAULT 'running',
     total INT NOT NULL DEFAULT 0,
     processed INT NOT NULL DEFAULT 0,
