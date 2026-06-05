@@ -42,6 +42,22 @@ export type TKline = {
   adjust?: string;
 };
 
+export type TIntradayPoint = {
+  time: string;
+  price: TDecimal;
+  avg_price: TDecimal;
+  volume: TDecimal;
+};
+
+export type TStockIntraday = {
+  market: string;
+  stock_code: string;
+  stock_name?: string;
+  trade_date: string;
+  pre_close: TDecimal;
+  points: TIntradayPoint[];
+};
+
 export type TStockBrief = {
   stock_code: string;
   stock_name: string;

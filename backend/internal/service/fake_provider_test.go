@@ -61,6 +61,26 @@ func (p *fakeProvider) Kline(ctx context.Context, code, period, adjust string) (
 	return bars, nil
 }
 
+func (p *fakeProvider) Intraday(ctx context.Context, code string) (model.StockIntraday, error) {
+	today := time.Now()
+	loc := today.Location()
+	open := time.Date(today.Year(), today.Month(), today.Day(), 9, 30, 0, 0, loc)
+	points := make([]model.IntradayPoint, 0, 4)
+	for i := 0; i < 4; i++ {
+		price := decimal.NewFromFloat(10 + float64(i)*0.1)
+		points = append(points, model.IntradayPoint{
+			Time:     open.Add(time.Duration(i) * time.Minute).Format(time.RFC3339),
+			Price:    price,
+			AvgPrice: price,
+			Volume:   decimal.NewFromInt(1000),
+		})
+	}
+	return model.StockIntraday{
+		Market: "CN", StockCode: code, TradeDate: today.Format("2006-01-02"),
+		PreClose: decimal.NewFromInt(9), Points: points,
+	}, nil
+}
+
 func (p *fakeProvider) Search(ctx context.Context, kw string) ([]model.Security, error) {
 	all, _ := p.StockList(ctx)
 	kw = strings.ToLower(kw)

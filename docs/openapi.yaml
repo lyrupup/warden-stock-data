@@ -436,6 +436,24 @@ paths:
                   - $ref: "#/components/schemas/ApiResponse"
                   - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
 
+  /admin/market/stocks/{code}/intraday:
+    get:
+      tags: [AdminMarket]
+      summary: 个股当日分时走势（管理后台只读）
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Intraday" } }
+
   /admin/market/stocks/{code}/indicators:
     get:
       tags: [AdminMarket]
@@ -535,6 +553,24 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
                   - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+
+  /open/v1/stocks/{code}/intraday:
+    get:
+      tags: [OpenMarket]
+      summary: 个股分时走势（实时透传；非交易日自动回退最近交易日，trade_date 标注实际日期）
+      security: [{ HmacSignature: [] }]
+      parameters:
+        - { in: path, name: code, required: true, schema: { type: string } }
+        - { in: query, name: market, schema: { type: string, default: CN } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Intraday" } }
 
   /open/v1/stocks/{code}/indicators:
     get:
@@ -829,6 +865,28 @@ components:
         close: { $ref: "#/components/schemas/Decimal" }
         volume: { $ref: "#/components/schemas/Decimal" }
         amount: { $ref: "#/components/schemas/Decimal" }
+
+    IntradayPoint:
+      type: object
+      description: 单个交易分钟的分时数据点
+      properties:
+        time: { type: string, format: date-time, example: "2026-06-05T09:30:00+08:00" }
+        price: { $ref: "#/components/schemas/Decimal" }
+        avg_price: { $ref: "#/components/schemas/Decimal" }
+        volume: { $ref: "#/components/schemas/Decimal" }
+
+    Intraday:
+      type: object
+      description: 当日分时走势（实时透传，不落库）
+      properties:
+        market: { type: string, example: CN }
+        stock_code: { type: string }
+        stock_name: { type: string }
+        trade_date: { type: string, example: "2026-06-05" }
+        pre_close: { $ref: "#/components/schemas/Decimal" }
+        points:
+          type: array
+          items: { $ref: "#/components/schemas/IntradayPoint" }
 
     StockBrief:
       type: object

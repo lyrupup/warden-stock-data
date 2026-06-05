@@ -20,6 +20,7 @@ func TestAdminMarketRoutesRegistered(t *testing.T) {
 		"/admin/market/search?kw=600183",
 		"/admin/market/stocks/600183",
 		"/admin/market/stocks/600183/kline",
+		"/admin/market/stocks/600183/intraday",
 		"/admin/market/stocks/600183/indicators",
 	}
 	for _, path := range adminMarketPaths {

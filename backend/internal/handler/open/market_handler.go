@@ -89,6 +89,15 @@ func (h *MarketHandler) Kline(c *gin.Context) {
 	response.OK(c, bars)
 }
 
+func (h *MarketHandler) Intraday(c *gin.Context) {
+	res, err := h.quote.Intraday(c.Request.Context(), c.Param("code"))
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, service.BizCode(err))
+		return
+	}
+	response.OK(c, res)
+}
+
 func (h *MarketHandler) StockIndicators(c *gin.Context) {
 	types := utils.SplitCSV(c.DefaultQuery("types", "ma5,ma10,ma20,ma30,ma60"))
 	res, err := h.indicator.ComputeForStock(c.Request.Context(), c.Param("code"), types)

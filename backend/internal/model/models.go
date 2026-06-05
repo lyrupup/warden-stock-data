@@ -120,6 +120,25 @@ type StockDailyKline struct {
 
 func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 
+// StockIntraday 当日分时走势（实时透传，不落库）。
+// 数据源为 gotdx 分时图（每个交易分钟一条），用于前端分时价格线 + 均价线 + 分时量。
+type StockIntraday struct {
+	Market    string          `json:"market"`
+	StockCode string          `json:"stock_code"`
+	StockName string          `json:"stock_name,omitempty"`
+	TradeDate string          `json:"trade_date"`         // 交易日 YYYY-MM-DD
+	PreClose  decimal.Decimal `json:"pre_close"`          // 昨收，作为分时图涨跌基准线
+	Points    []IntradayPoint `json:"points"`
+}
+
+// IntradayPoint 单个交易分钟的分时数据点。Volume 为该分钟的成交量（非累计）。
+type IntradayPoint struct {
+	Time     string          `json:"time"`      // RFC3339（Asia/Shanghai）分钟时间点
+	Price    decimal.Decimal `json:"price"`     // 当前价
+	AvgPrice decimal.Decimal `json:"avg_price"` // 当日均价
+	Volume   decimal.Decimal `json:"volume"`    // 该分钟成交量
+}
+
 type StockIndicatorSnapshot struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
 	Market    string         `gorm:"size:8;not null;default:CN" json:"market"`

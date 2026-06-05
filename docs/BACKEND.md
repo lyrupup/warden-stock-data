@@ -406,6 +406,10 @@ type StockDailyKline struct {
 func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 ```
 
+> **分时走势（实时透传，不落库）**：`StockIntraday` / `IntradayPoint` 为纯领域对象（无 GORM 表），由 `QuoteService.Intraday` 经 `IMarketProvider.Intraday` 调 gotdx `StockTickChart` 拉当日分时图（价格 / 均价 / 该分钟成交量）并补一次盘口快照取昨收。gotdx 分时点本身**不含时间戳**，按索引推算 A 股交易分钟（上午 09:30–11:30、下午 13:00–15:00 共 240 点），时区固定东八区。
+>
+> **最近交易日 + 历史回退**：先以「日 K 最后一根的日期」反推最近交易日（`latestTradeDate`）；当日分时为空（**非交易日 / 盘前**）时自动回退到该交易日的历史分时 `StockHistoryTickChart`，响应中的 `trade_date` 即实际返回数据所属交易日。前端无需感知是否交易日，直接按 `trade_date` 展示。
+
 ---
 
 ## 4. API 接口文档
@@ -465,6 +469,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | GET | `/open/v1/quotes?codes=600000,000001` | 批量个股快照 |
 | GET | `/open/v1/stocks/:code` | 单只个股快照 |
 | GET | `/open/v1/stocks/:code/kline?period=day&adjust=qfq&limit=120` | K 线（支持 `from`/`to` 交易日区间，回测取历史区间用） |
+| GET | `/open/v1/stocks/:code/intraday` | 分时走势（实时透传：价格线 + 均价线 + 分时量；不落库；非交易日自动回退最近交易日，`trade_date` 标注实际日期） |
 | GET | `/open/v1/stocks/:code/indicators?types=ma5,ma10,ma20,ma30,ma60` | 单只实时指标 |
 | GET | `/open/v1/indicators?codes=...&types=ma5,ma60&trade_date=` | 批量指标（读快照） |
 | GET | `/open/v1/search?kw=` | 股票搜索（优先查本地 `securities` 表 + trgm 索引；库空时回源行情提供方） |

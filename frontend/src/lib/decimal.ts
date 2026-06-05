@@ -8,6 +8,14 @@ export const formatPct = (v: string | number): string =>
 export const formatPrice = (v: string | number, digits = 2): string =>
   toNumber(v).toFixed(digits);
 
+/** 成交量按万/亿压缩，贴合 A 股展示习惯 */
+export const formatVolume = (v: string | number): string => {
+  const n = toNumber(v);
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`;
+  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`;
+  return `${Math.round(n)}`;
+};
+
 /** A 股涨跌色：涨红跌绿 */
 export const changeColor = (v: string | number): string => {
   const n = toNumber(v);

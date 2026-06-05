@@ -2,6 +2,7 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  HistogramSeries,
   LineSeries,
   type IChartApi,
   type ISeriesApi,
@@ -10,7 +11,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { changeColor, formatPrice, toNumber } from "@/lib/decimal";
+import { changeColor, formatPrice, formatVolume, toNumber } from "@/lib/decimal";
 import type { TKline } from "@/types/market";
 
 /** 可叠加的 MA 周期，覆盖国内常用 5/10/20/30/60/120 日均线 */
@@ -30,6 +31,10 @@ export const MA_COLOR: Record<TMAPeriod, string> = {
 /** A 股配色：涨红跌绿 */
 const UP_COLOR = "#dc2626";
 const DOWN_COLOR = "#16a34a";
+
+/** 成交量柱用半透明涨跌色，避免压过主图 K 线 */
+const UP_VOLUME_COLOR = "rgba(220,38,38,0.7)";
+const DOWN_VOLUME_COLOR = "rgba(22,163,74,0.7)";
 
 const parseTime = (date: string): UTCTimestamp =>
   Math.floor(new Date(date).getTime() / 1000) as UTCTimestamp;
@@ -68,12 +73,13 @@ type TKlineChartProps = {
 export const KlineChart = ({
   klines,
   enabledMAs = [],
-  height = 400,
+  height = 520,
   initialVisibleBars = 60,
 }: TKlineChartProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const lineRefs = useRef<ISeriesApi<"Line">[]>([]);
 
   const [hoverTime, setHoverTime] = useState<number | null>(null);
@@ -130,8 +136,27 @@ export const KlineChart = ({
       wickDownColor: DOWN_COLOR,
     });
 
+    const volumeSeries = chart.addSeries(
+      HistogramSeries,
+      {
+        priceFormat: { type: "custom", formatter: formatVolume, minMove: 1 },
+        priceLineVisible: false,
+        lastValueVisible: false,
+      },
+      1,
+    );
+    volumeSeries.priceScale().applyOptions({
+      borderVisible: false,
+      scaleMargins: { top: 0.1, bottom: 0 },
+    });
+
+    // 主图与成交量子图按 3:1 分配高度
+    chart.panes()[0]?.setStretchFactor(3);
+    chart.panes()[1]?.setStretchFactor(1);
+
     chartRef.current = chart;
     candleRef.current = candleSeries;
+    volumeRef.current = volumeSeries;
 
     const handler = (param: { time?: unknown }) => {
       setHoverTime(typeof param.time === "number" ? param.time : null);
@@ -152,6 +177,7 @@ export const KlineChart = ({
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
+      volumeRef.current = null;
     };
   }, [height]);
 
@@ -165,6 +191,17 @@ export const KlineChart = ({
         high: toNumber(k.high),
         low: toNumber(k.low),
         close: toNumber(k.close),
+      })),
+    );
+
+    volumeRef.current?.setData(
+      klines.map((k) => ({
+        time: parseTime(k.trade_date),
+        value: toNumber(k.volume),
+        color:
+          toNumber(k.close) >= toNumber(k.open)
+            ? UP_VOLUME_COLOR
+            : DOWN_VOLUME_COLOR,
       })),
     );
 
@@ -258,6 +295,12 @@ const OhlcStrip = ({ k, isHover }: { k: TKline; isHover: boolean }) => {
         {sign}
         {formatPrice(change)} ({sign}
         {pct.toFixed(2)}%)
+      </span>
+      <span>
+        <span className="text-muted-foreground">量 </span>
+        <span className="font-medium text-foreground">
+          {formatVolume(k.volume)}
+        </span>
       </span>
     </div>
   );

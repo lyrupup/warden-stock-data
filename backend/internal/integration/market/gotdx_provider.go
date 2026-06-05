@@ -136,6 +136,55 @@ func (p *GotdxProvider) Kline(ctx context.Context, code, period, adjust string) 
 	return bars, err
 }
 
+// Intraday 拉取分时走势（实时透传）。分时图本身只含价格/均价/成交量、无时间戳，
+// 这里按索引推算交易分钟；同时取一次盘口快照补全昨收（涨跌基准线）。
+// 最近交易日由日 K 最后一根反推：当日分时为空（非交易日/盘前）时，回退到该交易日的历史分时。
+func (p *GotdxProvider) Intraday(ctx context.Context, code string) (model.StockIntraday, error) {
+	out := model.StockIntraday{Market: "CN", StockCode: code}
+	var tradeDate time.Time
+	err := p.withClient(ctx, func(c *gotdx.Client) error {
+		mkt := marketOf(code)
+		tradeDate = p.latestTradeDate(c, mkt, code)
+
+		points, err := c.StockTickChart(mkt, code, 0, types.DefaultTickChartCount)
+		if err != nil {
+			return err
+		}
+		if len(points) > 0 {
+			out.Points = mapIntradayPoints(points, tradeDate)
+		} else {
+			// 当日无分时（非交易日 / 盘前），回退最近交易日历史分时。
+			dateInt := uint32(tradeDate.Year()*10000 + int(tradeDate.Month())*100 + tradeDate.Day())
+			hist, herr := c.StockHistoryTickChart(dateInt, mkt, code)
+			if herr != nil {
+				return herr
+			}
+			out.Points = mapHistoryIntradayPoints(hist, tradeDate)
+		}
+		if qs, qerr := c.StockQuotesDetail([]uint8{mkt}, []string{code}); qerr == nil && len(qs) > 0 {
+			out.PreClose = priceFromFloat(qs[0].PreClose)
+		}
+		return nil
+	})
+	if err != nil {
+		return model.StockIntraday{}, err
+	}
+	out.TradeDate = tradeDate.Format("2006-01-02")
+	return out, nil
+}
+
+// latestTradeDate 以日 K 最后一根的日期作为最近交易日；取不到时退回当前东八区日期。
+func (p *GotdxProvider) latestTradeDate(c *gotdx.Client, mkt uint8, code string) time.Time {
+	if bars, err := c.GetSecurityBars(types.KLINE_TYPE_RI_K, mkt, code, 0, 2); err == nil && bars != nil && len(bars.List) > 0 {
+		b := bars.List[len(bars.List)-1]
+		if !b.DateTime.IsZero() {
+			return b.DateTime
+		}
+		return time.Date(b.Year, time.Month(b.Month), b.Day, 0, 0, 0, 0, cnLoc)
+	}
+	return time.Now().In(cnLoc)
+}
+
 func (p *GotdxProvider) Search(ctx context.Context, kw string) ([]model.Security, error) {
 	all, err := p.StockList(ctx)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/warden-stock/warden-stock-data/internal/model"
@@ -36,5 +37,23 @@ func TestEnrichQuoteNames(t *testing.T) {
 func TestQuoteSearchEmptyKeyword(t *testing.T) {
 	svc := service.NewQuoteService(newFakeProvider(), nil, nil, nil)
 	_, err := svc.Search(context.Background(), "   ")
+	require.Error(t, err)
+}
+
+func TestIntradayHappyPath(t *testing.T) {
+	svc := service.NewQuoteService(newFakeProvider(), nil, nil, nil)
+	res, err := svc.Intraday(context.Background(), "600519")
+	require.NoError(t, err)
+	require.Equal(t, "600519", res.StockCode)
+	require.NotEmpty(t, res.Points)
+	require.True(t, res.PreClose.GreaterThan(decimal.Zero))
+	for _, p := range res.Points {
+		require.NotEmpty(t, p.Time)
+	}
+}
+
+func TestIntradayEmptyCode(t *testing.T) {
+	svc := service.NewQuoteService(newFakeProvider(), nil, nil, nil)
+	_, err := svc.Intraday(context.Background(), "  ")
 	require.Error(t, err)
 }

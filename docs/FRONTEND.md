@@ -24,7 +24,7 @@
 | 全局状态 | **zustand** | 管理员认证、主题 |
 | 请求器 | **ky** | 基于 fetch，封装于 `core/http-client/` |
 | 表单 | **react-hook-form + zod** | 凭证创建 / 作业配置表单与校验 |
-| 图表 | **lightweight-charts** | K 线图（含 MA5/10/20/30/60 叠加） |
+| 图表 | **lightweight-charts** | K 线图（含 MA5/10/20/30/60 叠加 + 成交量副图）、分时图 |
 | 国际化 | **i18next + react-i18next** | 语言包置于 `core/i18n/locales/`（V1 中文为主） |
 | 测试 | **Vitest + Testing Library + MSW** | 单测 + 组件测试 + 接口 Mock |
 | 代码规范 | ESLint + Prettier | 统一风格 |
@@ -54,7 +54,8 @@ src/
 │       ├── confirm-dialog/      # 二次确认（吊销凭证等危险操作）
 │       ├── secret-reveal-dialog/# secretKey 一次性展示 + 复制
 │       ├── page-header/         # 页面标题/操作区
-│       ├── kline-chart/         # K 线图 + 均线叠加
+│       ├── kline-chart/         # K 线图 + 均线叠加 + 成交量副图
+│       ├── intraday-chart/      # 分时图：价格线 + 均价线 + 昨收基准 + 分时量副图
 │       └── empty-state/         # 空态/错误降级
 ├── features/
 │   ├── auth/                    # M6 管理员登录
@@ -199,7 +200,7 @@ interface IAuthState {
 | `/credentials/:id` | 凭证详情 + 调用审计 | M5/M6 | 需登录 |
 | `/market` | 行情中心（大盘指数概览） | M6 | 需登录 |
 | `/market/quote` | 个股行情搜索（搜索 → 点击结果跳转详情） | M6 | 需登录 |
-| `/market/quote/:code` | 个股行情详情（快照 + K 线 + 均线 + 指标） | M6 | 需登录 |
+| `/market/quote/:code` | 个股行情详情（快照 + 分时 + K 线 + 均线 + 指标） | M6 | 需登录 |
 | `/ops/datasources` | 数据源管理与健康 | M1/M6 | 需登录 |
 | `/ops/jobs` | 更新作业配置与执行记录 | M2/M6 | 需登录 |
 
@@ -233,7 +234,7 @@ interface IAuthState {
 - **个股行情详情**：`/market/quote/:code` 按路由 `code` 拉取数据，三态处理：
   - **加载中**：拉取快照时展示 Loading（spinner + 提示）。
   - **错误 / 无数据**：股票不存在或拉取失败时展示错误卡片与「返回搜索」入口。
-  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加）+ 指标面板。
+  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图，60s 轮询）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加 + 成交量副图）+ 指标面板。
 
 ### 6.4 运维（features/ops）
 

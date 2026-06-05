@@ -158,6 +158,26 @@ func (s *QuoteService) Quote(ctx context.Context, code string) (*model.StockQuot
 	return &quotes[0], nil
 }
 
+// Intraday 返回个股当日分时走势（实时透传）。失败时统一映射为 provider 错误码。
+// 名称以本地 securities 表为准（行情源分时接口不含名称）。
+func (s *QuoteService) Intraday(ctx context.Context, code string) (model.StockIntraday, error) {
+	if strings.TrimSpace(code) == "" {
+		return model.StockIntraday{}, errcodeBiz{code: errcode.ErrParam}
+	}
+	res, err := s.provider.Intraday(ctx, code)
+	if err != nil {
+		return model.StockIntraday{}, errcodeBiz{code: errcode.ErrProvider}
+	}
+	if s.secRepo != nil {
+		if names, nerr := s.secRepo.NamesByCodes(ctx, s.market, []string{code}); nerr == nil {
+			if n := names[code]; n != "" {
+				res.StockName = n
+			}
+		}
+	}
+	return res, nil
+}
+
 // StockBrief 对齐 openapi StockBrief 契约（stock_code/stock_name/market/board）。
 type StockBrief struct {
 	StockCode string `json:"stock_code"`

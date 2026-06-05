@@ -1,6 +1,7 @@
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { IntradayChart } from "@/components/common/intraday-chart";
 import {
   KlineChart,
   MA_PERIODS,
@@ -25,6 +26,7 @@ import { formatPrice } from "@/lib/decimal";
 import type { EKlineAdjust, EKlinePeriod } from "@/types/market";
 import {
   useStockIndicators,
+  useStockIntraday,
   useStockKline,
   useStockQuote,
 } from "../hooks/use-market";
@@ -44,6 +46,7 @@ export const StockQuoteDetailPage = () => {
     isError,
   } = useStockQuote(code || null);
   const { data: klines } = useStockKline(code || null, period, adjust);
+  const { data: intraday } = useStockIntraday(code || null);
   const { data: indicators } = useStockIndicators(code || null);
 
   const toggleMA = (p: TMAPeriod) =>
@@ -136,6 +139,28 @@ export const StockQuoteDetailPage = () => {
               {formatPrice(quote.turnover_rate)}%
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg">
+            分时走势
+            {intraday?.trade_date ? (
+              <span className="ml-2 text-sm font-normal text-muted-foreground">
+                {intraday.trade_date}
+              </span>
+            ) : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {intraday?.points?.length ? (
+            <IntradayChart intraday={intraday} />
+          ) : (
+            <p className="py-8 text-center text-muted-foreground">
+              暂无分时数据
+            </p>
+          )}
         </CardContent>
       </Card>
 

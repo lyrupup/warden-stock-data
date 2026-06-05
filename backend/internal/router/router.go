@@ -81,6 +81,7 @@ func Setup(mode string, deps Deps) *gin.Engine {
 				market.GET("/search", openH.Search)
 				market.GET("/stocks/:code", openH.Stock)
 				market.GET("/stocks/:code/kline", openH.Kline)
+				market.GET("/stocks/:code/intraday", openH.Intraday)
 				market.GET("/stocks/:code/indicators", openH.StockIndicators)
 			}
 		}
@@ -95,6 +96,7 @@ func Setup(mode string, deps Deps) *gin.Engine {
 		open.GET("/quotes", openH.Quotes)
 		open.GET("/stocks/:code", openH.Stock)
 		open.GET("/stocks/:code/kline", openH.Kline)
+		open.GET("/stocks/:code/intraday", openH.Intraday)
 		open.GET("/stocks/:code/indicators", openH.StockIndicators)
 		open.GET("/indicators", openH.BatchIndicators)
 		open.GET("/search", openH.Search)

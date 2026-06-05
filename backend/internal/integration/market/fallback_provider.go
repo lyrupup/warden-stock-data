@@ -76,6 +76,18 @@ func (p *FallbackProvider) Kline(ctx context.Context, code, period, adjust strin
 	return nil, last
 }
 
+func (p *FallbackProvider) Intraday(ctx context.Context, code string) (model.StockIntraday, error) {
+	var last error
+	for _, pr := range p.providers {
+		v, err := pr.Intraday(ctx, code)
+		if err == nil && len(v.Points) > 0 {
+			return v, nil
+		}
+		last = err
+	}
+	return model.StockIntraday{}, last
+}
+
 func (p *FallbackProvider) Search(ctx context.Context, kw string) ([]model.Security, error) {
 	var last error
 	for _, pr := range p.providers {

@@ -9,6 +9,7 @@ export const marketKeys = {
   quote: (code: string) => [...marketKeys.all, "quote", code] as const,
   kline: (code: string, period: EKlinePeriod, adjust: EKlineAdjust) =>
     [...marketKeys.all, "kline", code, period, adjust] as const,
+  intraday: (code: string) => [...marketKeys.all, "intraday", code] as const,
   indicators: (code: string) =>
     [...marketKeys.all, "indicators", code] as const,
 };
@@ -44,6 +45,14 @@ export const useStockKline = (
     queryKey: marketKeys.kline(code ?? "", period, adjust),
     queryFn: () => marketApi.kline(code!, { period, adjust }),
     enabled: !!code,
+  });
+
+export const useStockIntraday = (code: string | null) =>
+  useQuery({
+    queryKey: marketKeys.intraday(code ?? ""),
+    queryFn: () => marketApi.intraday(code!),
+    enabled: !!code,
+    refetchInterval: 60_000,
   });
 
 export const useStockIndicators = (code: string | null) =>

@@ -4,6 +4,7 @@ import type {
   TIndicatorResult,
   TKline,
   TStockBrief,
+  TStockIntraday,
   TStockQuote,
   EKlineAdjust,
   EKlinePeriod,
@@ -43,6 +44,13 @@ export const marketApi = {
           limit: opts.limit ?? 120,
           market: opts.market ?? "CN",
         },
+      }),
+    ),
+
+  intraday: (code: string, market = "CN") =>
+    getData<TStockIntraday>(
+      httpClient.get(`market/stocks/${code}/intraday`, {
+        searchParams: { market },
       }),
     ),
 
