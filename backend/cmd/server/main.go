@@ -66,9 +66,15 @@ func main() {
 		os.Exit(1)
 	}
 	_ = jobRepo.EnsureDefaults(context.Background())
-	_ = jobRepo.EnsureDefaultDataSource(context.Background())
+	_ = jobRepo.EnsureDefaultDataSource(context.Background(), cfg.MarketProvider)
+	if n, err := jobRepo.MarkStaleRunningAsFailed(context.Background()); err == nil && n > 0 {
+		slog.Info("recovered stale running job runs", "count", n)
+	}
 
 	provider := market.NewProvider(cfg.MarketProvider)
+	if c, ok := provider.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
 	redisClient := cache.NewRedisClient(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword, cfg.RedisDB)
 
 	var nonceStore cache.NonceStore = cache.NewMemoryNonceStore()
@@ -86,10 +92,14 @@ func main() {
 		slog.Warn("redis unavailable, using in-memory stores", "err", err)
 	}
 
-	quoteSvc := service.NewQuoteService(provider, quoteRepo, quoteCache)
+	if err := secRepo.EnsureSearchIndexes(context.Background()); err != nil {
+		slog.Warn("ensure securities search indexes failed", "err", err)
+	}
+
+	quoteSvc := service.NewQuoteService(provider, quoteRepo, secRepo, quoteCache)
 	klineSvc := service.NewKlineService(provider, klineRepo)
 	indicatorSvc := service.NewIndicatorService(klineSvc, indiRepo)
-	metaSvc := service.NewMetaService(provider, indiRepo)
+	metaSvc := service.NewMetaService(provider, indiRepo, secRepo, klineRepo, jobRepo)
 	updateSvc := service.NewUpdateService(provider, klineRepo, wmRepo, calRepo, secRepo, indicatorSvc)
 	jobRunner := scheduler.NewJobRunner(updateSvc, jobRepo)
 	cronSched := scheduler.NewCronScheduler(jobRunner, jobRepo, calRepo)
@@ -99,6 +109,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go bootstrapSecurities(ctx, secRepo, updateSvc)
+	jobRunner.ResumeWaiting(ctx)
 	if err := cronSched.Start(ctx); err != nil {
 		slog.Warn("cron start", "err", err)
 	}
@@ -148,4 +160,18 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// bootstrapSecurities 首次启动时从行情源同步证券列表，避免概览页证券数量为 0。
+func bootstrapSecurities(ctx context.Context, secRepo *repository.SecurityRepository, updateSvc *service.UpdateService) {
+	bootCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	n, err := secRepo.Count(bootCtx, "CN")
+	if err != nil || n > 0 {
+		return
+	}
+	slog.Info("bootstrapping securities from market provider")
+	if err := updateSvc.SyncSecurities(bootCtx); err != nil {
+		slog.Warn("bootstrap securities failed", "err", err)
+	}
 }
