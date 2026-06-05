@@ -1,0 +1,38 @@
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# 依赖
+node_modules/
+vendor/
+
+# 构建产物
+dist/
+build/
+out/
+*.log
+
+# Go
+bin/
+*.exe
+*.test
+*.out
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 临时 / 缓存
+tmp/
+.cache/
+coverage/
+.gocache/
+
+# PostgreSQL 数据目录（Docker bind mount 持久化）
+backend/deploy/pgdata/

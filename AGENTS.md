@@ -53,6 +53,11 @@
 - 每个服务独立容器，通过 docker-compose 统一编排。
 - 所有环境配置通过环境变量注入，不硬编码。
 
+### Docker 部署规范
+
+1. **PostgreSQL 数据持久化到本项目目录**：PostgreSQL 的数据目录 `/var/lib/postgresql/data` 必须通过 bind mount 持久化到**本项目内的目录**（如 `backend/deploy/pgdata`），不得使用项目外的宿主机路径或匿名卷，确保数据可随项目管理与查看。该数据目录须加入 `.gitignore`，禁止提交到仓库。
+2. **镜像名称自动加项目名前缀**：后端启动 Docker 服务时，构建出的镜像名称必须自动带上项目名前缀（前缀取当前项目名，如 `<project>-backend`）。通过在 `docker-compose.yml` 顶层设置 `name: <project>`（统一项目名与容器/网络前缀），并为自建服务显式指定 `image: <project>-<service>` 实现。
+
 ---
 
 ## 二、开发前置阅读要求

@@ -1,9 +1,10 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
+ENV GOTOOLCHAIN=auto
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /warden-server ./cmd/server
+RUN CGO_ENABLED=0 go build -tags gotdx -o /warden-server ./cmd/server
 
 FROM alpine:3.20
 WORKDIR /app

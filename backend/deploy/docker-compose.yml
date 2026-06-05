@@ -1,3 +1,5 @@
+name: warden_stock_data
+
 services:
   postgres:
     image: postgres:16
@@ -8,6 +10,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
+      - ./pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
   redis:
@@ -16,6 +19,7 @@ services:
       - "6379:6379"
 
   backend:
+    image: warden_stock_data-backend:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -34,7 +38,7 @@ services:
       PG_DB: warden_data
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      MARKET_PROVIDER: stub
+      MARKET_PROVIDER: gotdx
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: admin123
     ports:
