@@ -57,7 +57,7 @@ func main() {
 	slog.Info("backfill start", "count", len(list), "years", *years)
 	_ = years
 	for i, code := range list {
-		if err := updateSvc.IncrementalOne(ctx, code); err != nil {
+		if err := updateSvc.IncrementalOne(ctx, code, nil); err != nil {
 			slog.Warn("kline", "code", code, "err", err)
 			continue
 		}

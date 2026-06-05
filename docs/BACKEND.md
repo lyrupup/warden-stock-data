@@ -546,14 +546,16 @@ func (p *GotdxProvider) Close() error
 
 对每只待更新标的:
   wm = watermark(market, code)            // 上次更新到的交易日
-  from = wm.last_trade_date + 1 交易日     // 借助 trading_calendars
   bars = provider.Kline(code, "day", "qfq")  // gotdx 取最新 N 根
   newBars = bars[trade_date > wm]          // 仅取水位之后
-  upsert stock_daily_klines(newBars)
-  update watermark = max(trade_date)
+  upsert stock_daily_klines(newBars)       // 有新数据才写
+  // 水位对齐到「数据源可得最新」与 latest（全市场最新交易日）的较新者：
+  watermark = max(bars 最新日期, latest)
 ```
 
 > **按 watermark 筛待更新（性能）**：`incremental` 类型且未显式指定 `codes` 时，`JobRunner.Run` 先用 `UpdateService.PendingCodes` 以「库内 K 线最大交易日」为基准过滤，仅对落后/新股发起数据源请求；盘后多数标的已最新时，请求量可从全市场约 5200 次降到个位/十位数。`full`/`indicator` 类型与显式指定 `codes` 不参与该过滤。
+
+> **水位对齐避免重复拉取（停牌/次新股）**：`IncrementalOne` 拉取成功后，即便本轮无新 K 线，也将 `watermark` 推进到「数据源可得最新日期」与「全市场最新交易日 `marketLatest`」中的较新者。否则停牌 / 尚未复牌的次新股因个股最新交易日永远落后于全市场，会被每轮增量反复选中、无效拉取（症状：增量 `pending` 数始终不归零）。对齐后这些个股不再被选中，直到全市场出现新交易日才会重试。`marketLatest` 由 `JobRunner.Run` 调 `UpdateService.MarketLatestTradeDate` 取一次后传入逐只处理。
 
 > **作业类型**：`incremental`（增量 K 线+指标）、`full`（全量回补 K 线+逐日指标）、`indicator`/`snapshot`（仅指标）、`securities`（**仅同步证券列表**：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口，作为新股入库的轻量入口）。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`daily-incremental` 17:00、`securities-sync` 8:30），存量库也会自动补上后加入的默认作业。
 

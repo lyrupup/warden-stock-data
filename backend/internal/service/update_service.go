@@ -37,7 +37,9 @@ func NewUpdateService(
 	}
 }
 
-func (s *UpdateService) IncrementalOne(ctx context.Context, code string) error {
+// IncrementalOne 增量更新单只标的的日 K 线。marketLatest 为全市场最新交易日
+// （可为 nil，如首次全量回补时库为空），用于对齐水位、避免停牌/次新股反复无效拉取。
+func (s *UpdateService) IncrementalOne(ctx context.Context, code string, marketLatest *time.Time) error {
 	wm, err := s.wmRepo.Get(ctx, s.market, code)
 	if err != nil {
 		return err
@@ -50,21 +52,33 @@ func (s *UpdateService) IncrementalOne(ctx context.Context, code string) error {
 		return bars[i].TradeDate.Before(bars[j].TradeDate)
 	})
 	newBars := filterAfterWatermark(bars, wm.LastTradeDate)
-	if len(newBars) == 0 {
-		return nil
+	if len(newBars) > 0 {
+		if err := s.klineRepo.UpsertBatch(ctx, newBars); err != nil {
+			return err
+		}
+		dates := make([]time.Time, len(newBars))
+		for i, b := range newBars {
+			dates[i] = b.TradeDate
+		}
+		if err := s.calRepo.UpsertInferred(ctx, s.market, dates); err != nil {
+			return err
+		}
 	}
-	if err := s.klineRepo.UpsertBatch(ctx, newBars); err != nil {
-		return err
+	// 推进水位到「数据源可得最新」与「全市场最新交易日」中的较新者：即便本轮无新
+	// K 线（停牌 / 次新股尚未复牌，gotdx 可能返回旧数据甚至空），也将水位对齐到全市场
+	// 最新交易日，避免这些个股因永远落后于全市场而被每轮增量反复选中、无效拉取。
+	// 数据源报错（err != nil）时已提前返回、不推进，留待下轮重试。
+	var target time.Time
+	if len(bars) > 0 {
+		target = bars[len(bars)-1].TradeDate
 	}
-	last := newBars[len(newBars)-1].TradeDate
-	if err := s.wmRepo.Upsert(ctx, s.market, code, last); err != nil {
-		return err
+	if marketLatest != nil && marketLatest.After(target) {
+		target = *marketLatest
 	}
-	dates := make([]time.Time, len(newBars))
-	for i, b := range newBars {
-		dates[i] = b.TradeDate
+	if !target.IsZero() && (wm.LastTradeDate == nil || target.After(*wm.LastTradeDate)) {
+		return s.wmRepo.Upsert(ctx, s.market, code, target)
 	}
-	return s.calRepo.UpsertInferred(ctx, s.market, dates)
+	return nil
 }
 
 func filterAfterWatermark(bars []model.StockDailyKline, wm *time.Time) []model.StockDailyKline {
@@ -126,6 +140,15 @@ func (s *UpdateService) SyncSecurities(ctx context.Context) error {
 		return err
 	}
 	return s.secRepo.UpsertBatch(ctx, list)
+}
+
+// MarketLatestTradeDate 返回全市场库内 K 线的最新交易日（库空时为 nil），
+// 供增量更新对齐个股水位使用。
+func (s *UpdateService) MarketLatestTradeDate(ctx context.Context) (*time.Time, error) {
+	if s.klineRepo == nil {
+		return nil, nil
+	}
+	return s.klineRepo.LatestTradeDate(ctx, s.market)
 }
 
 // PendingCodes 在给定代码集合中筛出「需要增量更新」的标的：

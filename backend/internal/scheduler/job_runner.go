@@ -152,6 +152,9 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 	run.Total = len(codes)
 	_ = r.jobRepo.SaveRun(ctx, run)
 
+	// 全市场最新交易日：用于增量更新对齐个股水位，避免停牌 / 次新股反复无效拉取。
+	marketLatest, _ := r.updateSvc.MarketLatestTradeDate(ctx)
+
 	batchSize := job.BatchSize
 	if batchSize <= 0 {
 		batchSize = 20
@@ -183,7 +186,7 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 			go func(code string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if err := r.runOne(ctx, opts.JobType, code); err != nil {
+				if err := r.runOne(ctx, opts.JobType, code, marketLatest); err != nil {
 					failed.Add(1)
 					slog.Warn("job item failed", "code", code, "err", err)
 				} else {
@@ -219,17 +222,17 @@ func (r *JobRunner) runSecuritiesSync(ctx context.Context, run *model.UpdateJobR
 	r.finishRun(ctx, run, "done", &processed, &succeeded, &failed)
 }
 
-func (r *JobRunner) runOne(ctx context.Context, jobType, code string) error {
+func (r *JobRunner) runOne(ctx context.Context, jobType, code string, marketLatest *time.Time) error {
 	switch jobType {
 	case "indicator", "snapshot":
 		return r.updateSvc.ScanIndicators(ctx, code, nil)
 	case "full":
-		if err := r.updateSvc.IncrementalOne(ctx, code); err != nil {
+		if err := r.updateSvc.IncrementalOne(ctx, code, marketLatest); err != nil {
 			return err
 		}
 		return r.updateSvc.BackfillIndicators(ctx, code, nil)
 	default:
-		if err := r.updateSvc.IncrementalOne(ctx, code); err != nil {
+		if err := r.updateSvc.IncrementalOne(ctx, code, marketLatest); err != nil {
 			return err
 		}
 		return r.updateSvc.ScanIndicators(ctx, code, nil)
