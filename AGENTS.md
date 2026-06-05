@@ -99,3 +99,17 @@
 - `docs/openapi.yaml` —— 接口文档
 
 > 任一核心功能变更未同步文档，视为该任务未完成。
+
+---
+
+## 四、协作输出与提交规范
+
+### 对话输出语言
+
+- 与用户的对话输出一律使用**中文**，不得使用英文作答。
+
+### Git 提交规范
+
+1. **强制账号配置**：提交前必须检查 `git config user.name` 与 `git config user.email`。任一为空时**阻断提交**，并提醒用户先完成 git 账号配置（`git config user.name` / `git config user.email`），不得擅自代为设置。
+2. **提交信息格式**：`git commit` 信息遵循 Conventional Commits。类型与作用域前缀（如 `feat(scope)`、`fix`、`refactor`、`docs`、`chore` 等）**保持英文**；冒号之后的描述（含标题描述与正文）**使用中文**撰写。例如：`refactor(backend): 移除 stub 行情源并统一 gotdx 构建`。
+3. **禁止 AI 署名**：提交信息中不得添加 Cursor / cursoragent 等 AI 工具的 `Co-authored-by` 或任何类似署名，提交的 author 与 committer 仅为用户本人。
