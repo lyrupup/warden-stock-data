@@ -2,7 +2,10 @@
 
 package market
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 func initGotdxIfNeeded(name string) IMarketProvider {
 	if name != "gotdx" {
@@ -10,8 +13,9 @@ func initGotdxIfNeeded(name string) IMarketProvider {
 	}
 	maxConn := 10
 	if v := os.Getenv("MARKET_GOTDX_MAX_CONN"); v != "" {
-		// simplified: use default 10
-		_ = v
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxConn = n
+		}
 	}
 	return NewGotdxProvider(maxConn)
 }

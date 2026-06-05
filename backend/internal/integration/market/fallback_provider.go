@@ -105,3 +105,16 @@ func (p *FallbackProvider) HealthCheck(ctx context.Context) error {
 		return pr.HealthCheck(ctx)
 	})
 }
+
+// Close 关闭所有实现了 io.Closer 的下游 provider（如 gotdx 连接池）。
+func (p *FallbackProvider) Close() error {
+	var last error
+	for _, pr := range p.providers {
+		if c, ok := pr.(interface{ Close() error }); ok {
+			if err := c.Close(); err != nil {
+				last = err
+			}
+		}
+	}
+	return last
+}
