@@ -1,18 +1,26 @@
-import { changeColor, formatPct, formatPrice } from "@/lib/decimal";
+import { changeColor, formatPct, formatPrice, toNumber } from "@/lib/decimal";
 import { cn } from "@/lib/cn";
 
 type TQuoteCellProps = {
   value: string | number;
   type?: "price" | "percent";
+  /** 为正值补前导 "+"，强化涨跌方向（涨跌额/涨跌幅展示用） */
+  signed?: boolean;
   className?: string;
 };
 
 export const QuoteCell = ({
   value,
   type = "price",
+  signed = false,
   className,
-}: TQuoteCellProps) => (
-  <span className={cn(changeColor(value), className)}>
-    {type === "percent" ? formatPct(value) : formatPrice(value)}
-  </span>
-);
+}: TQuoteCellProps) => {
+  const text = type === "percent" ? formatPct(value) : formatPrice(value);
+  const prefix = signed && toNumber(value) > 0 ? "+" : "";
+  return (
+    <span className={cn(changeColor(value), className)}>
+      {prefix}
+      {text}
+    </span>
+  );
+};

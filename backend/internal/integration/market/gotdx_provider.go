@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bensema/gotdx"
+	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
 
 	"github.com/warden-stock/warden-stock-data/internal/model"
@@ -48,13 +49,12 @@ func (p *GotdxProvider) HealthCheck(ctx context.Context) error {
 }
 
 func (p *GotdxProvider) Indices(ctx context.Context) ([]model.IndexQuote, error) {
-	// 指数代码与股票代码的市场归属规则不同，需显式指定：
-	// 000001 上证指数→沪市；399001 深证成指、399006 创业板指→深市。
-	codes := []string{"000001", "399001", "399006"}
-	mkts := []uint8{
-		types.MarketSH.Uint8(),
-		types.MarketSZ.Uint8(),
-		types.MarketSZ.Uint8(),
+	catalog := cnIndexCatalog()
+	codes := make([]string, len(catalog))
+	mkts := make([]uint8, len(catalog))
+	for i, idx := range catalog {
+		codes[i] = idx.code
+		mkts[i] = idx.market
 	}
 	var out []model.IndexQuote
 	err := p.withClient(ctx, func(c *gotdx.Client) error {
@@ -62,14 +62,19 @@ func (p *GotdxProvider) Indices(ctx context.Context) ([]model.IndexQuote, error)
 		if err != nil {
 			return err
 		}
-		today := time.Now().Truncate(24 * time.Hour)
 		now := time.Now()
+		today := now.Truncate(24 * time.Hour)
+		// 数据源返回顺序不保证与请求一致，按代码建索引后，按目录顺序稳定输出。
+		byCode := make(map[string]proto.QuoteListItem, len(list))
 		for _, q := range list {
-			out = append(out, model.IndexQuote{
-				Market: "CN", IndexCode: q.Code, IndexName: indexNameOf(q.Code),
-				Price: priceFromFloat(q.Price), ChangePercent: changePercent(q.Price, q.PreClose),
-				TradeDate: today, SnapshotAt: now,
-			})
+			byCode[q.Code] = q
+		}
+		for _, idx := range catalog {
+			q, ok := byCode[idx.code]
+			if !ok {
+				continue
+			}
+			out = append(out, mapIndexQuote(q, idx.name, today, now))
 		}
 		return nil
 	})
@@ -224,16 +229,34 @@ func marketOf(code string) uint8 {
 	return types.MarketSZ.Uint8()
 }
 
-func indexNameOf(code string) string {
-	switch code {
-	case "000001":
-		return "上证指数"
-	case "399001":
-		return "深证成指"
-	case "399006":
-		return "创业板指"
-	default:
-		return code
+// cnIndex 描述一只 A 股大盘指数的代码、所属市场与展示名。
+// 指数代码与个股代码的市场归属规则不同，需显式声明市场，不能用 marketOf 前缀推断。
+type cnIndex struct {
+	code   string
+	market uint8
+	name   string
+}
+
+// cnIndexCatalog 返回对外展示的大盘核心指数目录（沪 / 深 / 北）。
+// 覆盖宽基与板块代表指数；后续新增指数只需在此追加。
+func cnIndexCatalog() []cnIndex {
+	sh := types.MarketSH.Uint8()
+	sz := types.MarketSZ.Uint8()
+	bj := types.MarketBJ.Uint8()
+	return []cnIndex{
+		{"000001", sh, "上证指数"},
+		{"000016", sh, "上证50"},
+		{"000300", sh, "沪深300"},
+		{"000680", sh, "科创综指"},
+		{"000688", sh, "科创50"},
+		{"000905", sh, "中证500"},
+		{"000852", sh, "中证1000"},
+		{"399001", sz, "深证成指"},
+		{"399006", sz, "创业板指"},
+		{"399005", sz, "中小100"},
+		{"399330", sz, "深证100"},
+		{"399673", sz, "创业板50"},
+		{"899050", bj, "北证50"},
 	}
 }
 

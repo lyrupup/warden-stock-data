@@ -535,7 +535,7 @@ func (p *GotdxProvider) Close() error
 ### M2 存储与增量更新调度（性能核心）
 
 - **取数链路（读，迁移自原系统）**：`Redis 命中 → Provider → stock_quotes 快照兜底(stale)`，TTL 盘中短、盘后长。
-- **指数行情**：`Redis 命中（TTL 5min）→ index_quotes 库内最新快照快速返回 + 后台 singleflight 刷新 TDX → 仅库空时同步拉取`。避免 Redis 过期后每次新建 TDX 连接阻塞首页 ~4s。
+- **指数行情**：`Redis 命中（TTL 5min）→ index_quotes 库内最新快照快速返回 + 后台 singleflight 刷新 TDX → 仅库空时同步拉取`。避免 Redis 过期后每次新建 TDX 连接阻塞首页 ~4s。指数目录由 `cnIndexCatalog()` 统一维护（沪/深/北：上证指数、上证50、沪深300、科创综指、科创50、中证500/1000、深证成指、创业板指/50、深证100、中小100、北证50 等），新增指数仅需在该目录追加；映射经 `mapIndexQuote` 完整填充 `price/change_amount/change_percent/volume/amount`。
 - **增量更新（写）**：
 
 ```
