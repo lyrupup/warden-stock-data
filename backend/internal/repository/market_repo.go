@@ -64,13 +64,13 @@ func (r *KlineRepository) LatestTradeDate(ctx context.Context, market string) (*
 	return &t.Time, nil
 }
 
-// DistinctStockCount 统计库中已存在日 K 数据的不同股票数量（衡量已从数据源拉取覆盖度）。
-func (r *KlineRepository) DistinctStockCount(ctx context.Context, market string) (int64, error) {
-	var count int64
-	err := r.db.WithContext(ctx).Model(&model.StockDailyKline{}).
-		Where("market = ?", market).
-		Distinct("stock_code").Count(&count).Error
-	return count, err
+// EnsureIndexes 幂等创建 K 线表的「市场 + 交易日」复合索引。
+// 使 MAX(trade_date)/最新交易日筛选走索引而非在数百万行上全表扫描（init.sql 仅
+// 首次初始化执行，存量库启动时调用以补齐）。
+func (r *KlineRepository) EnsureIndexes(ctx context.Context) error {
+	return r.db.WithContext(ctx).Exec(
+		"CREATE INDEX IF NOT EXISTS idx_klines_market_trade_date ON stock_daily_klines (market, trade_date)",
+	).Error
 }
 
 type QuoteRepository struct{ db *gorm.DB }
@@ -325,6 +325,16 @@ func (r *WatermarkRepository) MapByMarket(ctx context.Context, market string) (m
 		}
 	}
 	return out, nil
+}
+
+// CountByMarket 统计某市场已建立更新水位的股票数量。水位在 K 线增量/回补成功后
+// 按 (market, code) 落一行，故其行数即「已入库行情数据的股票数」，且每股一行、
+// 查询走唯一索引，远快于在 stock_daily_klines 数百万行上做 COUNT(DISTINCT)。
+func (r *WatermarkRepository) CountByMarket(ctx context.Context, market string) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.UpdateWatermark{}).
+		Where("market = ?", market).Count(&count).Error
+	return count, err
 }
 
 func (r *WatermarkRepository) Upsert(ctx context.Context, market, code string, last time.Time) error {

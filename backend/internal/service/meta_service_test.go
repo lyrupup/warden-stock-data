@@ -10,7 +10,7 @@ import (
 )
 
 func TestFreshnessProviderFallback(t *testing.T) {
-	svc := service.NewMetaService(newFakeProvider(), nil, nil, nil, nil)
+	svc := service.NewMetaService(newFakeProvider(), nil, nil, nil, nil, nil)
 	f, err := svc.Freshness(context.Background(), "CN")
 	require.NoError(t, err)
 	require.Equal(t, "CN", f.Market)

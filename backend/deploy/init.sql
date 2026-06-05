@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS stock_daily_klines (
     CONSTRAINT uni_klines_market_code_date_adj UNIQUE (market, stock_code, trade_date, adjust)
 );
 
+-- 概览「数据新鲜度」与增量筛选需按市场取最新交易日（MAX(trade_date)）：
+-- 复合索引避免在数百万行 K 线上全表扫描。
+CREATE INDEX IF NOT EXISTS idx_klines_market_trade_date ON stock_daily_klines (market, trade_date);
+
 CREATE TABLE IF NOT EXISTS stock_indicator_snapshots (
     id BIGSERIAL PRIMARY KEY,
     market VARCHAR(8) NOT NULL DEFAULT 'CN',

@@ -14,6 +14,7 @@ type MetaService struct {
 	indiRepo  *repository.IndicatorRepository
 	secRepo   *repository.SecurityRepository
 	klineRepo *repository.KlineRepository
+	wmRepo    *repository.WatermarkRepository
 	jobRepo   *repository.JobRepository
 }
 
@@ -22,11 +23,12 @@ func NewMetaService(
 	indiRepo *repository.IndicatorRepository,
 	secRepo *repository.SecurityRepository,
 	klineRepo *repository.KlineRepository,
+	wmRepo *repository.WatermarkRepository,
 	jobRepo *repository.JobRepository,
 ) *MetaService {
 	return &MetaService{
 		provider: provider, indiRepo: indiRepo, secRepo: secRepo,
-		klineRepo: klineRepo, jobRepo: jobRepo,
+		klineRepo: klineRepo, wmRepo: wmRepo, jobRepo: jobRepo,
 	}
 }
 
@@ -95,8 +97,8 @@ func (s *MetaService) Freshness(ctx context.Context, market string) (*Freshness,
 			f.SecuritiesCount = n
 		}
 	}
-	if s.klineRepo != nil {
-		if n, err := s.klineRepo.DistinctStockCount(ctx, market); err == nil {
+	if s.wmRepo != nil {
+		if n, err := s.wmRepo.CountByMarket(ctx, market); err == nil {
 			f.KlineStockCount = n
 		}
 	}

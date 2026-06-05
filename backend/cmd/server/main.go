@@ -95,11 +95,14 @@ func main() {
 	if err := secRepo.EnsureSearchIndexes(context.Background()); err != nil {
 		slog.Warn("ensure securities search indexes failed", "err", err)
 	}
+	if err := klineRepo.EnsureIndexes(context.Background()); err != nil {
+		slog.Warn("ensure kline indexes failed", "err", err)
+	}
 
 	quoteSvc := service.NewQuoteService(provider, quoteRepo, secRepo, quoteCache)
 	klineSvc := service.NewKlineService(provider, klineRepo)
 	indicatorSvc := service.NewIndicatorService(klineSvc, indiRepo)
-	metaSvc := service.NewMetaService(provider, indiRepo, secRepo, klineRepo, jobRepo)
+	metaSvc := service.NewMetaService(provider, indiRepo, secRepo, klineRepo, wmRepo, jobRepo)
 	updateSvc := service.NewUpdateService(provider, klineRepo, wmRepo, calRepo, secRepo, indicatorSvc)
 	jobRunner := scheduler.NewJobRunner(updateSvc, jobRepo)
 	cronSched := scheduler.NewCronScheduler(jobRunner, jobRepo, calRepo)

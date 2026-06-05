@@ -453,7 +453,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | POST | `/admin/jobs/runs/:runId/cancel` | 取消运行中作业 |
 | GET | `/admin/jobs/runs` | 执行记录（分页，含进度） |
 | GET | `/admin/jobs/runs/:runId` | 单次执行详情 / 进度 |
-| GET | `/admin/freshness` | 数据新鲜度（全市场更新到哪个交易日、最近扫描时间、已入库行情股票数 `kline_stock_count`） |
+| GET | `/admin/freshness` | 数据新鲜度（全市场更新到哪个交易日、最近扫描时间、已入库行情股票数 `kline_stock_count`）。性能：最新交易日走 `(market, trade_date)` 复合索引；`kline_stock_count` 取 `update_watermarks` 行数（每股一行），避免在数百万行 K 线上做 `MAX` 全表扫描与 `COUNT(DISTINCT)` |
 
 > 管理 API 也可调用全部开放 API 的只读能力用于后台行情展示（后台前端直接复用 `/open/v1` 的 service 层或带管理员上下文的内部只读接口）。
 
