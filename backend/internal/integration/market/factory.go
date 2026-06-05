@@ -1,12 +1,14 @@
 package market
 
-// NewProvider returns the configured market provider. V1 defaults to stub when gotdx is unavailable.
+import "os"
+
+// NewProvider returns the configured market provider. Build with `-tags gotdx` for real gotdx.
 func NewProvider(providerName string) IMarketProvider {
-	switch providerName {
-	case "gotdx":
-		// Real gotdx adapter is injected via build tag `-tags gotdx` in future iterations.
-		return NewStubProvider()
-	default:
-		return NewStubProvider()
+	if name := os.Getenv("MARKET_PROVIDER"); name != "" {
+		providerName = name
 	}
+	if p := initGotdxIfNeeded(providerName); p != nil {
+		return NewFallbackProvider(p, NewStubProvider())
+	}
+	return NewStubProvider()
 }

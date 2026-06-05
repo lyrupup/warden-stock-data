@@ -7,15 +7,18 @@ import (
 
 	"github.com/warden-stock/warden-stock-data/internal/integration/market"
 	"github.com/warden-stock/warden-stock-data/internal/model"
+	"github.com/warden-stock/warden-stock-data/internal/repository"
 	"github.com/warden-stock/warden-stock-data/pkg/errcode"
 )
 
 type KlineService struct {
-	provider market.IMarketProvider
+	provider  market.IMarketProvider
+	klineRepo *repository.KlineRepository
+	market    string
 }
 
-func NewKlineService(provider market.IMarketProvider) *KlineService {
-	return &KlineService{provider: provider}
+func NewKlineService(provider market.IMarketProvider, klineRepo *repository.KlineRepository) *KlineService {
+	return &KlineService{provider: provider, klineRepo: klineRepo, market: "CN"}
 }
 
 type KlineQuery struct {
@@ -25,16 +28,32 @@ type KlineQuery struct {
 	Limit  int
 	From   *time.Time
 	To     *time.Time
+	Market string
 }
 
 func (s *KlineService) Kline(ctx context.Context, q KlineQuery) ([]model.StockDailyKline, error) {
 	if q.Code == "" {
 		return nil, errcodeBiz{code: errcode.ErrParam}
 	}
+	marketCode := q.Market
+	if marketCode == "" {
+		marketCode = s.market
+	}
 	adjust := q.Adjust
 	if adjust == "" {
 		adjust = "qfq"
 	}
+	if q.Period == "" {
+		q.Period = "day"
+	}
+
+	if s.klineRepo != nil && q.Period == "day" {
+		bars, err := s.klineRepo.List(ctx, marketCode, q.Code, adjust, q.From, q.To, q.Limit)
+		if err == nil && len(bars) > 0 {
+			return bars, nil
+		}
+	}
+
 	bars, err := s.provider.Kline(ctx, q.Code, q.Period, adjust)
 	if err != nil {
 		return nil, err

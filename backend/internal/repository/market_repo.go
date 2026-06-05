@@ -1,0 +1,240 @@
+package repository
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/shopspring/decimal"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/warden-stock/warden-stock-data/internal/model"
+)
+
+type KlineRepository struct{ db *gorm.DB }
+
+func NewKlineRepository(db *gorm.DB) *KlineRepository { return &KlineRepository{db: db} }
+
+func (r *KlineRepository) UpsertBatch(ctx context.Context, bars []model.StockDailyKline) error {
+	if len(bars) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}, {Name: "adjust"}},
+		DoUpdates: clause.AssignmentColumns([]string{"open", "high", "low", "close", "volume", "amount", "source"}),
+	}).CreateInBatches(bars, 200).Error
+}
+
+func (r *KlineRepository) List(ctx context.Context, market, code, adjust string, from, to *time.Time, limit int) ([]model.StockDailyKline, error) {
+	q := r.db.WithContext(ctx).Where("market = ? AND stock_code = ? AND adjust = ?", market, code, adjust)
+	if from != nil {
+		q = q.Where("trade_date >= ?", from)
+	}
+	if to != nil {
+		q = q.Where("trade_date <= ?", to)
+	}
+	q = q.Order("trade_date asc")
+	if limit > 0 && from == nil && to == nil {
+		var bars []model.StockDailyKline
+		err := r.db.WithContext(ctx).Raw(`
+			SELECT * FROM (
+				SELECT * FROM stock_daily_klines
+				WHERE market = ? AND stock_code = ? AND adjust = ?
+				ORDER BY trade_date DESC LIMIT ?
+			) t ORDER BY trade_date ASC`, market, code, adjust, limit).Scan(&bars).Error
+		return bars, err
+	}
+	var bars []model.StockDailyKline
+	err := q.Find(&bars).Error
+	return bars, err
+}
+
+type QuoteRepository struct{ db *gorm.DB }
+
+func NewQuoteRepository(db *gorm.DB) *QuoteRepository { return &QuoteRepository{db: db} }
+
+func (r *QuoteRepository) Upsert(ctx context.Context, q *model.StockQuote) error {
+	return r.db.WithContext(ctx).Create(q).Error
+}
+
+func (r *QuoteRepository) LatestByCodes(ctx context.Context, market string, codes []string) ([]model.StockQuote, error) {
+	if len(codes) == 0 {
+		return nil, nil
+	}
+	var quotes []model.StockQuote
+	sub := r.db.WithContext(ctx).Model(&model.StockQuote{}).
+		Select("stock_code, MAX(snapshot_at) as snapshot_at").
+		Where("market = ? AND stock_code IN ?", market, codes).
+		Group("stock_code")
+	err := r.db.WithContext(ctx).Table("stock_quotes sq").
+		Joins("INNER JOIN (?) latest ON sq.stock_code = latest.stock_code AND sq.snapshot_at = latest.snapshot_at", sub).
+		Where("sq.market = ?", market).
+		Find(&quotes).Error
+	return quotes, err
+}
+
+func (r *QuoteRepository) SaveIndexQuotes(ctx context.Context, quotes []model.IndexQuote) error {
+	if len(quotes) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Create(&quotes).Error
+}
+
+type IndicatorRepository struct{ db *gorm.DB }
+
+func NewIndicatorRepository(db *gorm.DB) *IndicatorRepository { return &IndicatorRepository{db: db} }
+
+func (r *IndicatorRepository) UpsertSnapshot(ctx context.Context, market, code string, tradeDate time.Time, values map[string]decimal.Decimal) error {
+	b, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	snap := model.StockIndicatorSnapshot{
+		Market: market, StockCode: code, TradeDate: tradeDate,
+		Values: datatypes.JSON(b), UpdatedAt: time.Now(),
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
+		DoUpdates: clause.AssignmentColumns([]string{"values", "updated_at"}),
+	}).Create(&snap).Error
+}
+
+func (r *IndicatorRepository) GetSnapshots(ctx context.Context, market string, codes []string, tradeDate *time.Time) ([]model.StockIndicatorSnapshot, error) {
+	q := r.db.WithContext(ctx).Where("market = ? AND stock_code IN ?", market, codes)
+	if tradeDate != nil {
+		q = q.Where("trade_date = ?", tradeDate)
+	} else {
+		q = q.Where("trade_date = (SELECT MAX(trade_date) FROM stock_indicator_snapshots WHERE market = ?)", market)
+	}
+	var snaps []model.StockIndicatorSnapshot
+	err := q.Find(&snaps).Error
+	return snaps, err
+}
+
+func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
+	var t time.Time
+	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
+		Where("market = ?", market).Select("MAX(trade_date)").Scan(&t).Error
+	if err != nil || t.IsZero() {
+		return nil, err
+	}
+	return &t, nil
+}
+
+type SecurityRepository struct{ db *gorm.DB }
+
+func NewSecurityRepository(db *gorm.DB) *SecurityRepository { return &SecurityRepository{db: db} }
+
+func (r *SecurityRepository) UpsertBatch(ctx context.Context, secs []model.Security) error {
+	if len(secs) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "market"}, {Name: "code"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name", "board", "status", "updated_at"}),
+	}).CreateInBatches(secs, 500).Error
+}
+
+func (r *SecurityRepository) List(ctx context.Context, market string) ([]model.Security, error) {
+	var list []model.Security
+	err := r.db.WithContext(ctx).Where("market = ? AND status = 1", market).Order("code asc").Find(&list).Error
+	return list, err
+}
+
+func (r *SecurityRepository) Search(ctx context.Context, market, kw string) ([]model.Security, error) {
+	var list []model.Security
+	pattern := "%" + kw + "%"
+	err := r.db.WithContext(ctx).Where("market = ? AND status = 1 AND (code ILIKE ? OR name ILIKE ?)", market, pattern, pattern).
+		Limit(50).Find(&list).Error
+	return list, err
+}
+
+type CalendarRepository struct{ db *gorm.DB }
+
+func NewCalendarRepository(db *gorm.DB) *CalendarRepository { return &CalendarRepository{db: db} }
+
+func (r *CalendarRepository) IsTradingDay(ctx context.Context, market string, date time.Time) (bool, error) {
+	d := date.Truncate(24 * time.Hour)
+	var cal model.TradingCalendar
+	err := r.db.WithContext(ctx).Where("market = ? AND cal_date = ?", market, d).First(&cal).Error
+	if err == gorm.ErrRecordNotFound {
+		weekday := d.Weekday()
+		return weekday != time.Saturday && weekday != time.Sunday, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return cal.IsOpen, nil
+}
+
+func (r *CalendarRepository) UpsertInferred(ctx context.Context, market string, dates []time.Time) error {
+	for _, d := range dates {
+		cal := model.TradingCalendar{Market: market, CalDate: d.Truncate(24 * time.Hour), IsOpen: true, Source: "inferred"}
+		if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "market"}, {Name: "cal_date"}},
+			DoUpdates: clause.AssignmentColumns([]string{"is_open", "source"}),
+		}).Create(&cal).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type WatermarkRepository struct{ db *gorm.DB }
+
+func NewWatermarkRepository(db *gorm.DB) *WatermarkRepository { return &WatermarkRepository{db: db} }
+
+func (r *WatermarkRepository) Get(ctx context.Context, market, code string) (*model.UpdateWatermark, error) {
+	var wm model.UpdateWatermark
+	err := r.db.WithContext(ctx).Where("market = ? AND stock_code = ?", market, code).First(&wm).Error
+	if err == gorm.ErrRecordNotFound {
+		return &model.UpdateWatermark{Market: market, StockCode: code}, nil
+	}
+	return &wm, err
+}
+
+func (r *WatermarkRepository) Upsert(ctx context.Context, market, code string, last time.Time) error {
+	wm := model.UpdateWatermark{Market: market, StockCode: code, LastTradeDate: &last, UpdatedAt: time.Now()}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "market"}, {Name: "stock_code"}},
+		DoUpdates: clause.AssignmentColumns([]string{"last_trade_date", "updated_at"}),
+	}).Create(&wm).Error
+}
+
+type AccessLogRepository struct{ db *gorm.DB }
+
+func NewAccessLogRepository(db *gorm.DB) *AccessLogRepository { return &AccessLogRepository{db: db} }
+
+func (r *AccessLogRepository) Incr(ctx context.Context, credentialID uint, isError bool) error {
+	today := time.Now().Truncate(24 * time.Hour)
+	now := time.Now()
+	log := model.CredentialAccessLog{CredentialID: credentialID, StatDate: today, CallCount: 1, LastAccessAt: &now}
+	if isError {
+		log.ErrorCount = 1
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "credential_id"}, {Name: "stat_date"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"call_count":     gorm.Expr("credential_access_logs.call_count + 1"),
+			"error_count":    gorm.Expr("credential_access_logs.error_count + ?", boolToInt(isError)),
+			"last_access_at": now,
+		}),
+	}).Create(&log).Error
+}
+
+func (r *AccessLogRepository) ListByCredential(ctx context.Context, credentialID uint, days int) ([]model.CredentialAccessLog, error) {
+	since := time.Now().AddDate(0, 0, -days).Truncate(24 * time.Hour)
+	var logs []model.CredentialAccessLog
+	err := r.db.WithContext(ctx).Where("credential_id = ? AND stat_date >= ?", credentialID, since).
+		Order("stat_date desc").Find(&logs).Error
+	return logs, err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

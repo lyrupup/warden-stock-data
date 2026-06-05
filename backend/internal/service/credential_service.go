@@ -17,6 +17,7 @@ import (
 type CredentialService struct {
 	repo   *repository.CredentialRepository
 	encKey []byte
+	cache  *credentialCache
 }
 
 type CredentialSecret struct {
@@ -102,14 +103,28 @@ func (s *CredentialService) Update(ctx context.Context, id uint, rateLimit, dail
 	if expireAt != nil {
 		cred.ExpireAt = expireAt
 	}
-	return s.repo.Update(ctx, cred)
+	if err := s.repo.Update(ctx, cred); err != nil {
+		return err
+	}
+	s.invalidateCache(id)
+	return nil
 }
 
 func (s *CredentialService) Revoke(ctx context.Context, id uint) error {
 	if _, err := s.Get(ctx, id); err != nil {
 		return err
 	}
-	return s.repo.Revoke(ctx, id)
+	if err := s.repo.Revoke(ctx, id); err != nil {
+		return err
+	}
+	s.invalidateCache(id)
+	return nil
+}
+
+func (s *CredentialService) invalidateCache(id uint) {
+	if s.cache != nil {
+		s.cache.invalidate(id)
+	}
 }
 
 func (s *CredentialService) Rotate(ctx context.Context, id uint) (*CredentialSecret, error) {

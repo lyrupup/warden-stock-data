@@ -1,4 +1,4 @@
-.PHONY: test build run tidy
+.PHONY: test build build-gotdx run backfill tidy
 
 test:
 	go test ./... -count=1
@@ -6,8 +6,14 @@ test:
 build:
 	go build -o bin/warden-server ./cmd/server
 
+build-gotdx:
+	go build -tags gotdx -o bin/warden-server ./cmd/server
+
 run:
 	go run ./cmd/server
+
+backfill:
+	go run ./cmd/backfill -years=5
 
 tidy:
 	go mod tidy
