@@ -5,6 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateTime } from "@/lib/format";
 import { useDatasources, useFreshness, useJobRuns } from "../hooks/use-ops";
+import {
+  formatJobRunProgress,
+  jobRunProgressTitle,
+} from "../lib/format-job-run-progress";
 
 export const DashboardPage = () => {
   const { data: freshness } = useFreshness();
@@ -138,8 +142,11 @@ export const DashboardPage = () => {
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-muted-foreground">
-                      {run.processed}/{run.total}
+                    <span
+                      className="tabular-nums text-muted-foreground"
+                      title={jobRunProgressTitle(run, securitiesCount)}
+                    >
+                      {formatJobRunProgress(run, securitiesCount)}
                     </span>
                     <Badge
                       variant={

@@ -30,12 +30,17 @@ import { formatDateTime } from "@/lib/format";
 import type { TJobRun, TUpdateJob } from "@/types/admin";
 import {
   useCancelJobRun,
+  useFreshness,
   useJobRunPolling,
   useJobRuns,
   useJobs,
   useRunJob,
   useUpdateJob,
 } from "../hooks/use-ops";
+import {
+  formatJobRunProgress,
+  jobRunProgressTitle,
+} from "../lib/format-job-run-progress";
 
 const STATUS_LABEL: Record<TJobRun["status"], string> = {
   waiting: "等待中",
@@ -72,6 +77,8 @@ export const JobsPage = () => {
   const { data: jobs } = useJobs();
   const { page, size, setPage } = usePagedQuery();
   const { data: runs } = useJobRuns(page, size);
+  const { data: freshness } = useFreshness();
+  const securitiesCount = freshness?.securities_count;
   const runJob = useRunJob();
   const cancelRun = useCancelJobRun();
   const [pollingRunId, setPollingRunId] = useState<number | null>(null);
@@ -159,9 +166,16 @@ export const JobsPage = () => {
           <CardContent className="space-y-3">
             <Progress value={progress} />
             <div className="flex justify-between text-sm text-muted-foreground">
-              <span>
-                {pollingRun.processed} / {pollingRun.total}（成功 {pollingRun.succeeded}，失败{" "}
-                {pollingRun.failed}）
+              <span
+                title={jobRunProgressTitle(pollingRun, securitiesCount)}
+              >
+                {formatJobRunProgress(pollingRun, securitiesCount)}（成功{" "}
+                {pollingRun.succeeded.toLocaleString()}，失败{" "}
+                {pollingRun.failed.toLocaleString()}
+                {pollingRun.job_type === "incremental" && pollingRun.total > 0
+                  ? `，待更新 ${pollingRun.total.toLocaleString()}`
+                  : ""}
+                ）
               </span>
               <Button
                 variant="outline"
@@ -227,8 +241,11 @@ export const JobsPage = () => {
                           {STATUS_LABEL[run.status] ?? run.status}
                         </Badge>
                       </TableCell>
-                      <TableCell>
-                        {run.processed}/{run.total}
+                      <TableCell
+                        className="tabular-nums"
+                        title={jobRunProgressTitle(run, securitiesCount)}
+                      >
+                        {formatJobRunProgress(run, securitiesCount)}
                       </TableCell>
                       <TableCell>{formatDateTime(run.started_at)}</TableCell>
                       <TableCell className="text-right">
