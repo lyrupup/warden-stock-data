@@ -100,6 +100,20 @@ curl -s -X POST http://localhost:8080/admin/auth/login \
 
 后端目录结构与技术说明见 [`docs/BACKEND.md`](docs/BACKEND.md)；单元测试：`cd backend && make test`。
 
+使用真实 gotdx 行情源（需网络）：
+
+```bash
+cd backend && make build-gotdx
+MARKET_PROVIDER=gotdx ./bin/warden-server
+```
+
+历史 K 线 / 指标回补：
+
+```bash
+cd backend && make backfill
+# 或指定标的：go run ./cmd/backfill -codes=600000,000001
+```
+
 ---
 
 ## 🚀 快速启动（管理后台前端）

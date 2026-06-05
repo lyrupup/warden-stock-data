@@ -102,7 +102,13 @@ func (h *MarketHandler) StockIndicators(c *gin.Context) {
 func (h *MarketHandler) BatchIndicators(c *gin.Context) {
 	codes := utils.SplitCSV(c.Query("codes"))
 	types := utils.SplitCSV(c.DefaultQuery("types", "ma5,ma10,ma20,ma30,ma60"))
-	list, err := h.indicator.BatchIndicators(c.Request.Context(), codes, types)
+	var tradeDate *time.Time
+	if td := c.Query("trade_date"); td != "" {
+		if t, err := time.Parse("2006-01-02", td); err == nil {
+			tradeDate = &t
+		}
+	}
+	list, err := h.indicator.BatchIndicators(c.Request.Context(), codes, types, tradeDate)
 	if err != nil {
 		response.Fail(c, http.StatusInternalServerError, errcode.ErrInternal)
 		return

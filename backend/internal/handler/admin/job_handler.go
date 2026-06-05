@@ -10,6 +10,7 @@ import (
 
 	"github.com/warden-stock/warden-stock-data/internal/model"
 	"github.com/warden-stock/warden-stock-data/internal/repository"
+	"github.com/warden-stock/warden-stock-data/internal/scheduler"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 	"github.com/warden-stock/warden-stock-data/pkg/errcode"
 	"github.com/warden-stock/warden-stock-data/pkg/response"
@@ -19,10 +20,16 @@ type JobHandler struct {
 	jobRepo   *repository.JobRepository
 	quoteSvc  *service.QuoteService
 	metaSvc   *service.MetaService
+	jobRunner *scheduler.JobRunner
 }
 
-func NewJobHandler(jobRepo *repository.JobRepository, quoteSvc *service.QuoteService, metaSvc *service.MetaService) *JobHandler {
-	return &JobHandler{jobRepo: jobRepo, quoteSvc: quoteSvc, metaSvc: metaSvc}
+func NewJobHandler(
+	jobRepo *repository.JobRepository,
+	quoteSvc *service.QuoteService,
+	metaSvc *service.MetaService,
+	jobRunner *scheduler.JobRunner,
+) *JobHandler {
+	return &JobHandler{jobRepo: jobRepo, quoteSvc: quoteSvc, metaSvc: metaSvc, jobRunner: jobRunner}
 }
 
 func (h *JobHandler) ListDataSources(c *gin.Context) {
@@ -121,13 +128,33 @@ func (h *JobHandler) UpdateJob(c *gin.Context) {
 
 func (h *JobHandler) RunJob(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	job, err := h.jobRepo.FindJob(c.Request.Context(), uint(id))
+	if err != nil {
+		response.Fail(c, http.StatusNotFound, errcode.ErrNotFound)
+		return
+	}
+	var req struct {
+		Type   string   `json:"type"`
+		Market string   `json:"market"`
+		Codes  []string `json:"codes"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.Type == "" {
+		req.Type = job.JobType
+	}
+	if req.Market == "" {
+		req.Market = job.Market
+	}
 	run := &model.UpdateJobRun{
-		JobID: uint(id), Status: "running", StartedAt: time.Now(),
+		JobID: job.ID, Status: "running", StartedAt: time.Now(),
 	}
 	if err := h.jobRepo.CreateRun(c.Request.Context(), run); err != nil {
 		response.Fail(c, http.StatusInternalServerError, errcode.ErrInternal)
 		return
 	}
+	go h.jobRunner.Run(c.Request.Context(), job, run, scheduler.RunOptions{
+		JobType: req.Type, Market: req.Market, Codes: req.Codes,
+	})
 	response.OK(c, gin.H{"runId": run.ID})
 }
 
@@ -154,6 +181,7 @@ func (h *JobHandler) GetRun(c *gin.Context) {
 
 func (h *JobHandler) CancelRun(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("runId"), 10, 64)
+	h.jobRunner.Cancel(uint(id))
 	run, err := h.jobRepo.FindRun(c.Request.Context(), uint(id))
 	if err != nil {
 		response.Fail(c, http.StatusNotFound, errcode.ErrNotFound)

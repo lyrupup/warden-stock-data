@@ -119,7 +119,7 @@ func (m *HmacAuth) Middleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		secretKey, cred, err := m.credSvc.ResolveSecretKey(c.Request.Context(), secretID)
+		secretKey, cred, err := m.credSvc.ResolveSecretKeyCached(c.Request.Context(), secretID)
 		if err != nil {
 			response.Fail(c, http.StatusUnauthorized, service.BizCode(err))
 			c.Abort()

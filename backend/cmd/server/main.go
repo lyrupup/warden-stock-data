@@ -16,6 +16,7 @@ import (
 	"github.com/warden-stock/warden-stock-data/internal/integration/market"
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 	"github.com/warden-stock/warden-stock-data/internal/router"
+	"github.com/warden-stock/warden-stock-data/internal/scheduler"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 	"github.com/warden-stock/warden-stock-data/pkg/cache"
 	"github.com/warden-stock/warden-stock-data/pkg/crypto"
@@ -47,6 +48,13 @@ func main() {
 	adminRepo := repository.NewAdminRepository(db)
 	credRepo := repository.NewCredentialRepository(db)
 	jobRepo := repository.NewJobRepository(db)
+	klineRepo := repository.NewKlineRepository(db)
+	quoteRepo := repository.NewQuoteRepository(db)
+	indiRepo := repository.NewIndicatorRepository(db)
+	secRepo := repository.NewSecurityRepository(db)
+	calRepo := repository.NewCalendarRepository(db)
+	wmRepo := repository.NewWatermarkRepository(db)
+	accessLogRepo := repository.NewAccessLogRepository(db)
 
 	hash, err := crypto.HashPassword(getEnv("ADMIN_PASSWORD", "admin123"))
 	if err != nil {
@@ -61,22 +69,40 @@ func main() {
 	_ = jobRepo.EnsureDefaultDataSource(context.Background())
 
 	provider := market.NewProvider(cfg.MarketProvider)
-	quoteSvc := service.NewQuoteService(provider)
-	klineSvc := service.NewKlineService(provider)
-	indicatorSvc := service.NewIndicatorService(klineSvc)
-	metaSvc := service.NewMetaService(quoteSvc)
+	redisClient := cache.NewRedisClient(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword, cfg.RedisDB)
+
+	var nonceStore cache.NonceStore = cache.NewMemoryNonceStore()
+	var rateLimiter cache.RateLimiter = cache.NewMemoryRateLimiter()
+	var quotaStore cache.QuotaStore = cache.NewMemoryQuotaStore()
+	var quoteCache *cache.QuoteCache
+
+	if err := redisClient.Ping(context.Background()).Err(); err == nil {
+		nonceStore = cache.NewRedis(redisClient)
+		rateLimiter = cache.NewRedisRateLimiter(redisClient)
+		quotaStore = cache.NewRedisQuota(redisClient)
+		quoteCache = cache.NewQuoteCache(redisClient, 30*time.Second)
+		slog.Info("redis connected")
+	} else {
+		slog.Warn("redis unavailable, using in-memory stores", "err", err)
+	}
+
+	quoteSvc := service.NewQuoteService(provider, quoteRepo, quoteCache)
+	klineSvc := service.NewKlineService(provider, klineRepo)
+	indicatorSvc := service.NewIndicatorService(klineSvc, indiRepo)
+	metaSvc := service.NewMetaService(provider, indiRepo)
+	updateSvc := service.NewUpdateService(provider, klineRepo, wmRepo, calRepo, secRepo, indicatorSvc)
+	jobRunner := scheduler.NewJobRunner(updateSvc, jobRepo)
+	cronSched := scheduler.NewCronScheduler(jobRunner, jobRepo, calRepo)
 
 	adminSvc := service.NewAdminService(adminRepo, cfg.JWTSecret, cfg.JWTExpire)
 	credSvc := service.NewCredentialService(credRepo, cfg.EncKey)
 
-	var nonceStore cache.NonceStore = cache.NewMemoryNonceStore()
-	redisClient := cache.NewRedisClient(cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword, cfg.RedisDB)
-	if err := redisClient.Ping(context.Background()).Err(); err == nil {
-		nonceStore = cache.NewRedis(redisClient)
-		slog.Info("redis connected for nonce store")
-	} else {
-		slog.Warn("redis unavailable, using in-memory nonce store", "err", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := cronSched.Start(ctx); err != nil {
+		slog.Warn("cron start", "err", err)
 	}
+	defer cronSched.Stop()
 
 	r := router.Setup(ginMode, router.Deps{
 		AdminSvc:       adminSvc,
@@ -86,7 +112,11 @@ func main() {
 		IndicatorSvc:   indicatorSvc,
 		MetaSvc:        metaSvc,
 		JobRepo:        jobRepo,
+		JobRunner:      jobRunner,
+		AccessLogRepo:  accessLogRepo,
 		NonceStore:     nonceStore,
+		RateLimiter:    rateLimiter,
+		QuotaStore:     quotaStore,
 		SignSkewSec:    cfg.SignSkewSec,
 		NonceTTL:       cfg.NonceTTL,
 		RequestTimeout: cfg.RequestTimeout,
@@ -98,7 +128,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("server starting", "port", cfg.AppPort, "env", cfg.AppEnv, "provider", cfg.MarketProvider)
+		slog.Info("server starting", "port", cfg.AppPort, "provider", cfg.MarketProvider)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("listen", "err", err)
 			os.Exit(1)
@@ -108,9 +138,9 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(ctx)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	_ = srv.Shutdown(shutdownCtx)
 }
 
 func getEnv(key, def string) string {

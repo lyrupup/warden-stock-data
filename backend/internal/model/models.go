@@ -166,10 +166,13 @@ var MigrateModels = []interface{}{
 	&APICredential{},
 	&DataSource{},
 	&Security{},
+	&TradingCalendar{},
 	&IndexQuote{},
 	&StockQuote{},
 	&StockDailyKline{},
 	&StockIndicatorSnapshot{},
+	&UpdateWatermark{},
 	&UpdateJob{},
 	&UpdateJobRun{},
+	&CredentialAccessLog{},
 }

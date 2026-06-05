@@ -117,6 +117,34 @@ CREATE TABLE IF NOT EXISTS admins (
     CONSTRAINT uni_admins_username UNIQUE (username)
 );
 
+CREATE TABLE IF NOT EXISTS trading_calendars (
+    id BIGSERIAL PRIMARY KEY,
+    market VARCHAR(8) NOT NULL DEFAULT 'CN',
+    cal_date DATE NOT NULL,
+    is_open BOOLEAN NOT NULL DEFAULT FALSE,
+    source VARCHAR(16) NOT NULL DEFAULT 'manual',
+    CONSTRAINT uni_trading_calendars_market_date UNIQUE (market, cal_date)
+);
+
+CREATE TABLE IF NOT EXISTS update_watermarks (
+    id BIGSERIAL PRIMARY KEY,
+    market VARCHAR(8) NOT NULL DEFAULT 'CN',
+    stock_code VARCHAR(16) NOT NULL,
+    last_trade_date DATE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uni_watermark_market_code UNIQUE (market, stock_code)
+);
+
+CREATE TABLE IF NOT EXISTS credential_access_logs (
+    id BIGSERIAL PRIMARY KEY,
+    credential_id BIGINT NOT NULL,
+    stat_date DATE NOT NULL,
+    call_count BIGINT NOT NULL DEFAULT 0,
+    error_count BIGINT NOT NULL DEFAULT 0,
+    last_access_at TIMESTAMPTZ,
+    CONSTRAINT uni_access_log_cred_date UNIQUE (credential_id, stat_date)
+);
+
 CREATE TABLE IF NOT EXISTS api_credentials (
     id BIGSERIAL PRIMARY KEY,
     secret_id VARCHAR(40) NOT NULL,
