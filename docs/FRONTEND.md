@@ -5,7 +5,7 @@
 > 文档版本：v1.0 ｜ 创建日期：2026-06-05
 > 配套文档：[`PRD.md`](./PRD.md) · [`BACKEND.md`](./BACKEND.md) · [`openapi.yaml`](./openapi.yaml)
 >
-> 本服务前端为**管理后台（Admin Console）**，仅面向管理员，对应 PRD **M6**。功能：管理员登录、接入凭证（secretId/secretKey）分发与管理、行情数据展示、数据源与更新作业管理。
+> 本服务前端为**管理后台（Admin Console）**，仅面向管理员，对应 PRD **M6**（并在个股详情内置 **M7** 分时做 T 研判）。功能：管理员登录、接入凭证（secretId/secretKey）分发与管理、行情数据展示、分时做 T 研判、数据源与更新作业管理。
 
 ---
 
@@ -200,7 +200,7 @@ interface IAuthState {
 | `/credentials/:id` | 凭证详情 + 调用审计 | M5/M6 | 需登录 |
 | `/market` | 行情中心（大盘指数概览） | M6 | 需登录 |
 | `/market/quote` | 个股行情搜索（搜索 → 点击结果跳转详情） | M6 | 需登录 |
-| `/market/quote/:code` | 个股行情详情（快照 + 分时 + K 线 + 均线 + 指标） | M6 | 需登录 |
+| `/market/quote/:code` | 个股行情详情（快照 + 分时 + 做 T 研判 + K 线 + 均线 + 指标） | M6 / M7 | 需登录 |
 | `/ops/datasources` | 数据源管理与健康 | M1/M6 | 需登录 |
 | `/ops/jobs` | 更新作业配置与执行记录 | M2/M6 | 需登录 |
 
@@ -234,7 +234,7 @@ interface IAuthState {
 - **个股行情详情**：`/market/quote/:code` 按路由 `code` 拉取数据，三态处理：
   - **加载中**：拉取快照时展示 Loading（spinner + 提示）。
   - **错误 / 无数据**：股票不存在或拉取失败时展示错误卡片与「返回搜索」入口。
-  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图，60s 轮询）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加 + 成交量副图）+ 指标面板。
+  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图 + 乖离副图 + 做 T 研判，60s 轮询，见 §6.5）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加 + 成交量副图）+ 指标面板。
 
 ### 6.4 运维（features/ops）
 
@@ -245,6 +245,22 @@ interface IAuthState {
   - 执行记录：`GET /admin/jobs/runs` 分页表格；运行中行用 `use-polling-query` 轮询进度条（processed/total）；可取消运行中作业。
   - 编辑作业：每个作业卡片提供「编辑」按钮，弹窗修改名称 / 市场 / cron / 分批 / 并发 / 启停（`job_type` 只读）；`cron_expr` 前端粗校验 + 服务端 `PUT /admin/jobs/:id` 权威校验，错误信息回显弹窗。
   - 数据新鲜度：`GET /admin/freshness` 展示「全市场更新到哪个交易日 / 最近扫描时间 / 证券数 / 行情数据覆盖率（已入库股票数 ÷ 证券总数）」。
+
+### 6.5 分时交易研判 / 做 T（M7，components/common/intraday-chart）
+
+> 在个股详情分时图之上的**纯前端**日内做 T（T+0 低吸高抛）辅助研判，不接交易、仅供参考。计算与渲染分层清晰，便于单测与复用。
+
+- **计算层（lib，纯函数 + vitest）**：
+  - `lib/intraday-signals.ts`：`computeIntradayMetrics`（逐分钟乖离 / 量比 / 累计均量，做 T 与趋势 BS 的共同基座）+ `computeIntradaySignals`（均价线交叉「趋势 B/S」）。
+  - `lib/daytrade.ts`：`computeDayTradeBaseline`（历史 ATR / refPct / 支撑压力，排除今日）、`computeDayTrend`（6 因子趋势态）、`computeDayTradePlan`（是否适合做 T 与模式）、`computeDayTradeSignals`（高抛低吸轨道 + 吸/抛信号）、`computeSessionMaturity`（盘中可靠度）。参数默认见 `DEFAULT_DAYTRADE_PARAMS`。
+- **渲染层（`intraday-chart.tsx`，lightweight-charts v5）**：主图（价 / 均价 / 昨收 / 高抛低吸轨道带 / 吸·抛箭头）+ 量副图（量柱 + 量能门槛线）+ 乖离副图；各 pane 注入浮动图例，hover 同步各自指标值。
+- **交互**：
+  - **模式切换**：「做 T（吸/抛）」/「趋势（B/S）」一键切换主图标注与下方面板。
+  - **研判面板**：趋势态 + 评分、建议模式、预期振幅、历史 ATR、轨道宽度、信号明细，每项带 `info` 悬浮说明；顶部「可靠度」徽标按交易时长分四档。
+  - **调参面板**：振幅门槛 / 轨道宽度 / 信号冷却 / 低吸缩量上限 / 趋势斜率窗口 / 历史回看 6 项滑块，改动**实时**重算研判与轨道，可一键重置默认；每项带 `info` 提示影响因素。
+- **数据来源**：复用 `useStockIntraday`（分时，60s 轮询）与 `useStockKline(code, "day", "qfq")`（历史基准，独立于上方 K 线周期选择器）。
+- **配色 / 弹层**：A 股涨红跌绿；info 提示与下拉等弹层统一用 `bg-popover`（需在 `tailwind.config.js` 与 `globals.css` 定义 `popover` 配色变量，否则透明）。
+- 详细计算口径与风险说明见 [`MARKET_DATA.md`](./MARKET_DATA.md) §4.9~§4.10。
 
 ---
 
