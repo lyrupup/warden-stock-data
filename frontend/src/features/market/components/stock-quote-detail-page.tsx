@@ -46,6 +46,8 @@ export const StockQuoteDetailPage = () => {
     isError,
   } = useStockQuote(code || null);
   const { data: klines } = useStockKline(code || null, period, adjust);
+  // 做 T 历史基准固定用日线前复权，独立于上方 K 线周期选择
+  const { data: dayKlines } = useStockKline(code || null, "day", "qfq");
   const { data: intraday } = useStockIntraday(code || null);
   const { data: indicators } = useStockIndicators(code || null);
 
@@ -155,7 +157,7 @@ export const StockQuoteDetailPage = () => {
         </CardHeader>
         <CardContent>
           {intraday?.points?.length ? (
-            <IntradayChart intraday={intraday} />
+            <IntradayChart intraday={intraday} klines={dayKlines} />
           ) : (
             <p className="py-8 text-center text-muted-foreground">
               暂无分时数据
