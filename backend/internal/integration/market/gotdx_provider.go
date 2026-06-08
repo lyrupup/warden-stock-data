@@ -110,28 +110,28 @@ func (p *GotdxProvider) Kline(ctx context.Context, code, period, adjust string) 
 	var bars []model.StockDailyKline
 	err = p.withClient(ctx, func(c *gotdx.Client) error {
 		mkt := marketOf(code)
-		// 注意：通达信单次 K 线请求上限受限，count=800 会触发服务端返回异常短帧
-		// 进而导致 gotdx 库解析 panic；实测 <=600 稳定，这里取 600（约 2.5 年日线）。
-		reply, err := c.GetSecurityBars(klineType, mkt, code, 0, 600)
+		raw, err := fetchKlinePage(c, klineType, mkt, code, 0, klinePageSize)
 		if err != nil {
 			return err
 		}
-		if reply == nil {
-			return nil
-		}
-		for _, b := range reply.List {
-			td := b.DateTime
-			if td.IsZero() {
-				td = time.Date(b.Year, time.Month(b.Month), b.Day, 0, 0, 0, 0, time.Local)
-			}
-			bars = append(bars, model.StockDailyKline{
-				Market: "CN", Source: "gotdx", StockCode: code, TradeDate: td,
-				Open: priceFromFloat(b.Open), High: priceFromFloat(b.High),
-				Low: priceFromFloat(b.Low), Close: priceFromFloat(b.Close),
-				Volume: volumeFromFloat(b.Vol), Adjust: adjust,
-			})
-		}
+		bars = mapSecurityBars(raw, code, adjust)
 		return nil
+	})
+	return bars, err
+}
+
+// KlineFull 分页拉取数据源全部历史 K 线（日/周/月），供全量回补作业使用。
+func (p *GotdxProvider) KlineFull(ctx context.Context, code, period, adjust string) ([]model.StockDailyKline, error) {
+	klineType, err := klineTypeOf(period)
+	if err != nil {
+		return nil, err
+	}
+	var bars []model.StockDailyKline
+	err = p.withClient(ctx, func(c *gotdx.Client) error {
+		mkt := marketOf(code)
+		var ferr error
+		bars, ferr = fetchKlineAll(ctx, c, klineType, mkt, code, adjust)
+		return ferr
 	})
 	return bars, err
 }

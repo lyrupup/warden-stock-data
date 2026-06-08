@@ -45,6 +45,10 @@ func (p *fakeProvider) Quotes(ctx context.Context, codes []string) ([]model.Stoc
 	return out, nil
 }
 
+func (p *fakeProvider) KlineFull(ctx context.Context, code, period, adjust string) ([]model.StockDailyKline, error) {
+	return p.Kline(ctx, code, period, adjust)
+}
+
 func (p *fakeProvider) Kline(ctx context.Context, code, period, adjust string) ([]model.StockDailyKline, error) {
 	base := time.Now().AddDate(0, 0, -120).Truncate(24 * time.Hour)
 	bars := make([]model.StockDailyKline, 0, 120)
