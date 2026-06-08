@@ -11,7 +11,19 @@ import (
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 )
 
-var defaultMATypes = []string{"ma5", "ma10", "ma20", "ma30", "ma60"}
+// defaultSnapshotTypes 为全市场扫描 / 逐日指标快照默认落库的指标集合。
+// 在均线基础上纳入回测高频使用的经典技术指标（MACD/KDJ/RSI/BOLL/ATR）与中长期动量，
+// 使接入方可按交易日直接读 point-in-time 历史指标，无需重算（回测友好）。
+// 指标值统一存入 stock_indicator_snapshots.values（JSONB），新增指标无需改表结构。
+var defaultSnapshotTypes = []string{
+	"ma5", "ma10", "ma20", "ma30", "ma60",
+	"macd_dif", "macd_dea", "macd_bar",
+	"kdj_k", "kdj_d", "kdj_j",
+	"rsi6", "rsi12", "rsi24",
+	"boll_mid", "boll_upper", "boll_lower",
+	"atr14", "atr20",
+	"pct_change20", "pct_change60",
+}
 
 type UpdateService struct {
 	provider  market.IMarketProvider
@@ -93,7 +105,7 @@ func filterAfterWatermark(bars []model.StockDailyKline, wm *time.Time) []model.S
 
 func (s *UpdateService) ScanIndicators(ctx context.Context, code string, types []string) error {
 	if len(types) == 0 {
-		types = defaultMATypes
+		types = defaultSnapshotTypes
 	}
 	bars, err := s.loadBars(ctx, code, 120)
 	if err != nil || len(bars) == 0 {
@@ -109,7 +121,7 @@ func (s *UpdateService) ScanIndicators(ctx context.Context, code string, types [
 
 func (s *UpdateService) BackfillIndicators(ctx context.Context, code string, types []string) error {
 	if len(types) == 0 {
-		types = defaultMATypes
+		types = defaultSnapshotTypes
 	}
 	bars, err := s.klineRepo.List(ctx, s.market, code, "qfq", nil, nil, 0)
 	if err != nil || len(bars) == 0 {
