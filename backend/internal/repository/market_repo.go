@@ -54,6 +54,34 @@ func (r *KlineRepository) List(ctx context.Context, market, code, adjust string,
 	return bars, err
 }
 
+// ListPage 按「自最新交易日向历史跳过 offset 根、取 limit 根」分页返回日 K（结果升序），
+// 并返回 hasMore 表示窗口左侧是否还有更早数据。实现上多取一根探测行（limit+1）判定
+// hasMore 后剔除，避免额外 COUNT 全表。供前端左滑分页加载更多历史 K 线。
+func (r *KlineRepository) ListPage(ctx context.Context, market, code, adjust string, offset, limit int) ([]model.StockDailyKline, bool, error) {
+	if limit <= 0 {
+		limit = 120
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var rows []model.StockDailyKline
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT * FROM (
+			SELECT * FROM stock_daily_klines
+			WHERE market = ? AND stock_code = ? AND adjust = ?
+			ORDER BY trade_date DESC LIMIT ? OFFSET ?
+		) t ORDER BY trade_date ASC`, market, code, adjust, limit+1, offset).Scan(&rows).Error
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		// 升序结果下，多取的探测行是最旧的一根，位于首位，剔除之。
+		rows = rows[1:]
+	}
+	return rows, hasMore, nil
+}
+
 func (r *KlineRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
 	var t sql.NullTime
 	err := r.db.WithContext(ctx).Model(&model.StockDailyKline{}).

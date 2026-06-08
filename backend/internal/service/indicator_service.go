@@ -153,10 +153,12 @@ func decimalMapToString(m map[string]decimal.Decimal) map[string]string {
 }
 
 // KlineIndicatorsResponse 为 K 线接口带指标返回结构：bars 为 OHLCV 序列，
-// indicators 为与 bars 按 trade_date 对齐的逐 bar 指标（point-in-time）。
+// indicators 为与 bars 按 trade_date 对齐的逐 bar 指标（point-in-time），
+// has_more 表示当前窗口左侧（更早方向）是否还有可分页加载的历史 K 线。
 type KlineIndicatorsResponse struct {
 	Bars       []model.StockDailyKline `json:"bars"`
 	Indicators []IndicatorResult       `json:"indicators"`
+	HasMore    bool                    `json:"has_more"`
 }
 
 // KlineIndicators 计算与 bars 对齐的逐 bar 指标序列，采用「快照优先 + 实时补齐」混合策略：

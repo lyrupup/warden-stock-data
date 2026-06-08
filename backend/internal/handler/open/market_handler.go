@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/warden-stock/warden-stock-data/internal/model"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 	"github.com/warden-stock/warden-stock-data/pkg/errcode"
 	"github.com/warden-stock/warden-stock-data/pkg/response"
@@ -69,32 +70,55 @@ func (h *MarketHandler) Kline(c *gin.Context) {
 			q.Limit = n
 		}
 	}
+	if offStr := c.Query("offset"); offStr != "" {
+		if n, err := strconv.Atoi(offStr); err == nil && n > 0 {
+			q.Offset = n
+		}
+	}
+	// from/to 区间模式（回测用）与 limit/offset 分页模式互斥，区间优先。
+	rangeMode := false
 	if from := c.Query("from"); from != "" {
 		if t, err := time.Parse("2006-01-02", from); err == nil {
 			q.From = &t
 			q.Limit = 0
+			rangeMode = true
 		}
 	}
 	if to := c.Query("to"); to != "" {
 		if t, err := time.Parse("2006-01-02", to); err == nil {
 			q.To = &t
 			q.Limit = 0
+			rangeMode = true
 		}
 	}
-	bars, err := h.kline.Kline(c.Request.Context(), q)
+
+	var bars []model.StockDailyKline
+	var hasMore bool
+	var err error
+	if rangeMode {
+		bars, err = h.kline.Kline(c.Request.Context(), q)
+	} else {
+		bars, hasMore, err = h.kline.KlinePage(c.Request.Context(), q)
+	}
 	if err != nil {
 		response.Fail(c, http.StatusBadRequest, service.BizCode(err))
 		return
 	}
 	// 带 indicators 参数时附带与 bars 对齐的逐 bar 指标（快照优先 + 实时补齐），
-	// 返回 {bars, indicators}；不带该参数时保持只返回 bars 数组（向后兼容）。
+	// 返回 {bars, indicators, has_more}；不带该参数时保持只返回 bars 数组（向后兼容）。
 	if types := utils.SplitCSV(c.Query("indicators")); len(types) > 0 {
 		adjust := q.Adjust
 		if adjust == "" {
 			adjust = "qfq"
 		}
 		inds := h.indicator.KlineIndicators(c.Request.Context(), q.Code, q.Period, adjust, bars, types)
-		response.OK(c, service.KlineIndicatorsResponse{Bars: bars, Indicators: inds})
+		if bars == nil {
+			bars = []model.StockDailyKline{}
+		}
+		if inds == nil {
+			inds = []service.IndicatorResult{}
+		}
+		response.OK(c, service.KlineIndicatorsResponse{Bars: bars, Indicators: inds, HasMore: hasMore})
 		return
 	}
 	response.OK(c, bars)
