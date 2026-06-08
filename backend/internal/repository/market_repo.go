@@ -175,6 +175,26 @@ func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string
 	return &t.Time, nil
 }
 
+// EarliestTradeDate 返回指标快照最早交易日，供运维查看快照历史覆盖区间。
+func (r *IndicatorRepository) EarliestTradeDate(ctx context.Context, market string) (*time.Time, error) {
+	var t sql.NullTime
+	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
+		Where("market = ?", market).Select("MIN(trade_date)").Scan(&t).Error
+	if err != nil || !t.Valid {
+		return nil, err
+	}
+	return &t.Time, nil
+}
+
+// SnapshotStockCountAt 返回某交易日有指标快照的股票数（唯一键 market+code+date，行数即股数），
+// 配合证券总数衡量「最新交易日指标快照的覆盖完整性」。
+func (r *IndicatorRepository) SnapshotStockCountAt(ctx context.Context, market string, date time.Time) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
+		Where("market = ? AND trade_date = ?", market, date).Count(&n).Error
+	return n, err
+}
+
 type SecurityRepository struct{ db *gorm.DB }
 
 func NewSecurityRepository(db *gorm.DB) *SecurityRepository { return &SecurityRepository{db: db} }
