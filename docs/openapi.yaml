@@ -461,7 +461,7 @@ paths:
       security: [{ AdminJWT: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -576,10 +576,17 @@ paths:
     get:
       tags: [OpenIndicator]
       summary: 单只个股技术指标（实时计算，缺失回退）
+      description: >
+        逗号分隔指标类型。可用类型见 /open/v1/meta 的 indicator_catalog，含：
+        均线 ma5/ma10/ma20/ma30/ma60；乖离 bias5/bias10/bias20；ma_align；
+        振幅 amplitude/amplitude_streak；动量 pct_change/pct_change5/pct_change20/pct_change60；
+        量比 vol_ratio；MACD macd_dif/macd_dea/macd_bar(12,26,9)；
+        KDJ kdj_k/kdj_d/kdj_j(9,3,3)；RSI rsi6/rsi12/rsi24；
+        BOLL boll_mid/boll_upper/boll_lower(20,2)；ATR atr14/atr20。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型" }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -598,10 +605,13 @@ paths:
       description: >
         读 stock_indicator_snapshots 历史指标快照。指定 trade_date 即取该交易日的
         point-in-time 指标（无未来函数），可用于按日回放的量化回测信号生成。
+        盘后全市场扫描默认落库的指标集合：ma5/10/20/30/60、macd_dif/dea/bar、
+        kdj_k/d/j、rsi6/12/24、boll_mid/upper/lower、atr14/atr20、pct_change20/60；
+        其余指标（如 bias、vol_ratio）可经单只实时接口按需计算。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: query, name: codes, required: true, schema: { type: string }, description: "逗号分隔" }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: trade_date, schema: { type: string, format: date }, description: "指定历史交易日(point-in-time)；为空取最新交易日" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
@@ -904,7 +914,7 @@ components:
         values:
           type: object
           additionalProperties: { $ref: "#/components/schemas/Decimal" }
-          example: { ma5: "12.3400", ma10: "12.1000", ma20: "11.8000", ma30: "11.5000", ma60: "10.9000" }
+          example: { ma5: "12.3400", ma20: "11.8000", ma60: "10.9000", macd_bar: "0.1500", kdj_k: "72.3000", rsi6: "65.0000", boll_upper: "13.2000", atr14: "0.4500" }
 
     Meta:
       type: object

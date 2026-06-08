@@ -248,7 +248,7 @@
 
 - 个股日 K 线（StockDailyKline）：market、source、stock_code、trade_date、OHLCV、复权口径。
 - 行情快照（StockQuote / IndexQuote）：实时盘口快照（兜底降级用）。
-- 个股技术指标快照（StockIndicatorSnapshot）：market、stock_code、trade_date、各指标值（MA5/10/20/30/60 等，JSONB 可扩展）—— **全市场扫描加速底座**。
+- 个股技术指标快照（StockIndicatorSnapshot）：market、stock_code、trade_date、各指标值（MA5/10/20/30/60、MACD/KDJ/RSI/BOLL/ATR、动量等，JSONB 可扩展）—— **全市场扫描加速底座 / 回测 point-in-time 指标源**。
 - 更新水位（UpdateWatermark）：market、stock_code、last_updated_trade_date。
 - 更新作业（UpdateJob）：类型（全量/增量/快照）、市场、范围、调度配置（cron / 触发时间点）、批次大小、并发度、状态。
 - 作业执行记录（UpdateJobRun）：job_id、开始/结束时间、进度（已处理/总数）、成功/失败计数、状态、错误信息。
@@ -299,8 +299,16 @@
   - `ma`（移动均线）、`ma_align`（均线多头/空头排列）、`bias`（乖离率）、`amplitude`（当日振幅）、`amplitude_streak`（连续振幅）、`pct_change`（N 日涨跌幅）、`field`（原始字段）、`vol_ratio`（量比）、`const`（常量）。
 - **F3.3 指标计算口径统一**：所有指标基于「升序前复权日 K 线序列，最后一根为当前 bar」计算，口径与公式明确、纯函数、可单测覆盖。
 - **F3.4 指标目录（Catalog）**：提供可扩展的指标元数据目录（类型、参数、单位、说明），作为「指标定义 ↔ 计算引擎 ↔ 前端展示」共用的单一事实源（迁移自原系统 catalog）。
-- **F3.5 指标扩展点（KDJ/MACD/RSI/BOLL 预留）**：定义统一的指标计算注册机制 `Indicator` 接口（输入 K 线序列 + 参数，输出指标序列 / 当前值），新增指标 = 实现接口 + 注册到目录，不改动 M2/M4。本期**预留接口与目录占位，不实现**。
-- **F3.6 两种计算时机**：
+- **F3.5 经典技术指标（已落地）**：在均线与迁移因子之上，补齐量化策略/回测最常用的经典技术指标，统一经指标注册机制接入、可被 `/open/v1/meta` 目录查询、可全市场盘后逐日预计算落库：
+  - **MACD**（`macd_dif` / `macd_dea` / `macd_bar`，12/26/9）
+  - **KDJ**（`kdj_k` / `kdj_d` / `kdj_j`，9/3/3）
+  - **RSI**（`rsi6` / `rsi12` / `rsi24`，Wilder 平滑）
+  - **BOLL**（`boll_mid` / `boll_upper` / `boll_lower`，20/2）
+  - **ATR**（`atr14` / `atr20`，真实波幅，做动态止损/轨道宽度）
+  - **中长期动量**（`pct_change20` / `pct_change60`）
+  > 多值指标（MACD/KDJ/BOLL）按子项拆为独立指标类型注册，契合单值计算接口与 JSONB 扁平快照。
+- **F3.6 指标扩展点**：定义统一的指标计算注册机制 `Indicator` 接口（输入 K 线序列 + 参数，输出指标值），新增指标 = 实现接口 + 注册到目录，不改动 M2/M4。后续可继续扩展 DMI/ADX、CCI、WR、OBV、换手率/市值（需基本面数据源）等。
+- **F3.7 两种计算时机**：
   - **离线批量**：由 M2 全市场扫描在盘后批量算好，落 `StockIndicatorSnapshot`（默认，供高并发只读）。
   - **实时计算**：对单只标的按需实时计算（拉 K 线即时算），用于明细页与未入快照的标的。
 
@@ -313,21 +321,23 @@
 #### 扩展性设计
 
 ```
-Indicator 接口: Compute(series Kline[], params) -> []IndicatorValue
-   ├── MAIndicator        (V1 实现: MA5/10/20/30/60)
-   ├── BiasIndicator      (V1 实现, 迁移)
-   ├── ...                (其余迁移因子)
-   ├── [预留] MACDIndicator
-   ├── [预留] KDJIndicator
-   ├── [预留] RSIIndicator
-   └── [预留] BOLLIndicator
+Indicator 接口: Compute(series, params) -> IndicatorValue   (多值指标按子项拆 type)
+   ├── MAIndicator         (ma5/10/20/30/60)
+   ├── BiasIndicator       (bias5/10/20, 迁移)
+   ├── ...                 (ma_align/amplitude/pct_change/vol_ratio... 迁移因子)
+   ├── MACDIndicator       (macd_dif/macd_dea/macd_bar)
+   ├── KDJIndicator        (kdj_k/kdj_d/kdj_j)
+   ├── RSIIndicator        (rsi6/rsi12/rsi24)
+   ├── BOLLIndicator       (boll_mid/boll_upper/boll_lower)
+   ├── ATRIndicator        (atr14/atr20)
+   └── [可继续扩展] DMI/ADX、CCI、WR、OBV、换手率/市值(需基本面源)
 ```
 
 #### 验收要点
 
-- 接口可返回任意个股的 MA5/MA10/MA20/MA30/MA60，数值与公式一致并经单测覆盖。
+- 接口可返回任意个股的 MA5/MA10/MA20/MA30/MA60、MACD/KDJ/RSI/BOLL/ATR 等指标，数值与公式一致并经单测覆盖。
 - 指标目录可被 M4/M6 读取，新增指标有明确接入路径（实现接口 + 注册）。
-- 离线快照与实时计算两种路径结果一致。
+- 离线快照与实时计算两种路径结果一致；多值指标各子项可独立查询。
 
 #### 回测数据支撑边界（重要说明）
 
@@ -583,7 +593,7 @@ GET  /open/v1/meta                         市场/指标目录/数据新鲜度
 |------|------|---------|
 | V1.0 MVP | A 股行情数据中台可用闭环 | M1（gotdx 适配 + 多市场抽象）、M2（落库 + 增量 + 盘后分批调度 + 全市场扫描）、M3（MA5~MA60 + 迁移因子）、M4（只读开放 API）、M5（Admin + secretId/Key 只读）、M6（登录 + 凭证分发 + 行情展示） |
 | V1.1 | 安全与可观测增强 | M5 HMAC 签名校验 + 防重放、凭证细粒度审计与告警、作业可观测增强 |
-| V1.2 | 指标扩展 | M3 KDJ/MACD/RSI/BOLL 落地，指标接口扩展，批量指标快照增强 |
+| V1.2 | 指标扩展（✅ 已落地） | M3 MACD/KDJ/RSI/BOLL/ATR + 中长期动量落地，纳入逐日指标快照默认集合（回测友好），指标目录与接口同步扩展 |
 | V1.3 | 日内交易辅助 | M7 分时做 T 研判（趋势态 / 适合度 / 高抛低吸 B/S / 调参 / 盘中可靠度），未来可将 ATR 等基准下沉到 M3 |
 | V2.0 | 多市场开放 | H 股 / 美股 Provider 接入、分市场交易日历与调度、多源对账 |
 
@@ -599,7 +609,7 @@ GET  /open/v1/meta                         市场/指标目录/数据新鲜度
 ### 11.2 关键决策（已确认）
 1. **开放 API 校验方式**：V1 直接采用 **HMAC 签名校验**（secretId + 时间戳 + nonce + 请求摘要，用 secretKey 签名，防重放），不走 Header 明文直传。
 2. **盘后定时更新默认参数**：默认触发时间点 **17:00（下午 5 点）**；默认**分批大小 20**；默认**并发度 10**。均可在后台配置覆盖。
-3. **全市场扫描默认指标**：V1 默认仅计算 **MA 指标（MA5/MA10/MA20/MA30/MA60）**；其余迁移因子 / KDJ/MACD 等后续按需开启。
+3. **全市场扫描默认指标**：已从「仅 MA」扩展为**回测友好的默认指标集合**——MA5/10/20/30/60、MACD（dif/dea/bar）、KDJ（k/d/j）、RSI（6/12/24）、BOLL（mid/upper/lower）、ATR（14/20）、中长期动量（pct_change20/60），盘后逐日预计算落 `StockIndicatorSnapshot`；bias、vol_ratio 等长尾因子走单只实时接口按需计算。
 4. **交易日历数据来源**：**自维护交易日历表为主 + gotdx 拉取的实际 K 线日期反推校正**（自维护表按年导入交易所休市安排，K 线实际成交日交叉校验补漏）。
 5. **K 线首次全量回补范围**：首次全量回补 **5 年**日 K 线。
 
