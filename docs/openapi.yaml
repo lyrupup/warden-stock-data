@@ -425,6 +425,7 @@ paths:
         - { in: query, name: period, schema: { type: string, enum: [day, week, month], default: day } }
         - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
         - { in: query, name: limit, schema: { type: integer, default: 120 } }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型；传入则返回 {bars, indicators}（前端 K 线图绘制用）" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -534,7 +535,12 @@ paths:
   /open/v1/stocks/{code}/kline:
     get:
       tags: [OpenMarket]
-      summary: 个股 K 线（支持 limit 或 from/to 区间，回测取历史区间用）
+      summary: 个股 K 线（支持 limit 或 from/to 区间；可选附带逐 bar 指标）
+      description: >
+        默认仅返回 bars 数组。传入 indicators 参数时，额外返回与 bars 按 trade_date 对齐的逐 bar 指标，
+        响应体变为 { bars, indicators } 对象；采用「快照优先 + 实时补齐」：日 K + 前复权且指标在默认快照集合内
+        → 读快照（含完整历史预热）；周/月 K、后复权、非默认指标（如 ma120）或快照缺口 → 在返回 bars 上逐 bar
+        point-in-time 实时计算。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量 等副图绘制。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
@@ -543,16 +549,23 @@ paths:
         - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "最近 N 根；与 from/to 互斥，区间优先" }
         - { in: query, name: from, schema: { type: string, format: date }, description: "起始交易日（含），回测区间用" }
         - { in: query, name: to, schema: { type: string, format: date }, description: "结束交易日（含），回测区间用" }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型(取值见 /open/v1/meta 的 indicators)；传入则返回 {bars, indicators}" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
-          description: ok
+          description: >
+            不带 indicators 时 data 为 Kline 数组；带 indicators 时 data 为 {bars, indicators} 对象。
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
-                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+                  - properties:
+                      data:
+                        oneOf:
+                          - type: array
+                            items: { $ref: "#/components/schemas/Kline" }
+                          - $ref: "#/components/schemas/KlineWithIndicators"
 
   /open/v1/stocks/{code}/intraday:
     get:
@@ -918,6 +931,17 @@ components:
           type: object
           additionalProperties: { $ref: "#/components/schemas/Decimal" }
           example: { ma5: "12.3400", ma20: "11.8000", ma60: "10.9000", macd_bar: "0.1500", kdj_k: "72.3000", rsi6: "65.0000", boll_upper: "13.2000", atr14: "0.4500" }
+
+    KlineWithIndicators:
+      type: object
+      description: K 线接口带 indicators 参数时的返回；indicators 与 bars 按 trade_date 对齐（point-in-time）。
+      properties:
+        bars:
+          type: array
+          items: { $ref: "#/components/schemas/Kline" }
+        indicators:
+          type: array
+          items: { $ref: "#/components/schemas/IndicatorResult" }
 
     Meta:
       type: object

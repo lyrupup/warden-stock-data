@@ -56,6 +56,7 @@
 ```
 GET /open/v1/stocks/{code}/kline?period=day&adjust=qfq&limit=120
 GET /open/v1/stocks/{code}/kline?from=2025-01-01&to=2025-12-31   # 区间查询（回测用）
+GET /open/v1/stocks/{code}/kline?indicators=ma5,macd_bar,kdj_k   # 带逐 bar 指标（绘图用）
 ```
 
 | 参数 | 默认 | 说明 |
@@ -64,9 +65,12 @@ GET /open/v1/stocks/{code}/kline?from=2025-01-01&to=2025-12-31   # 区间查询�
 | `adjust` | `qfq` | `qfq`(前复权) / `hfq`(后复权) / `""`(不复权) |
 | `limit` | `120` | 最近 N 根；与 `from`/`to` 互斥（区间优先） |
 | `from` / `to` | — | 交易日区间（含端点）；传入后 `limit` 置 0 |
+| `indicators` | — | 逗号分隔指标类型；传入则返回 `{bars, indicators}`（逐 bar 指标，与 bars 按 `trade_date` 对齐） |
 | `market` | `CN` | 市场维度（当前仅 CN） |
 
-Handler 解析逻辑（`market_handler.go`）：传入 `from` 或 `to` 时会把 `limit` 置 0，转为区间查询。
+Handler 解析逻辑（`market_handler.go`）：传入 `from` 或 `to` 时会把 `limit` 置 0，转为区间查询；传入 `indicators` 时调 `IndicatorService.KlineIndicators`（快照优先 + 实时补齐）附带逐 bar 指标，响应体由 bars 数组变为 `{bars, indicators}` 对象（不传则保持数组，向后兼容）。
+
+> **逐 bar 指标策略**：日 K + 前复权且指标属默认快照集合 → 读 `stock_indicator_snapshots` 区间快照（含完整历史预热）；周/月 K、后复权、非默认指标（如 `ma120`）或快照缺口 → 在返回 bars 上逐 bar `bars[:i+1]` point-in-time 实时计算。前端 K 线图的 MA/BOLL 叠加与 MACD/KDJ/RSI/ATR/动量副图全部读此接口，**不再在前端手算**。
 
 ### 3.2 Service 读库优先逻辑
 

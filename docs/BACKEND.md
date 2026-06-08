@@ -641,6 +641,7 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 
 - Handler 仅做绑定 + 调 service + 组装；service 复用 M1/M2/M3。
 - 指标接口：`?types=ma5,ma60` → 优先快照、缺失则实时算；批量接口强制走快照（性能）。
+- **K 线带指标**：`/stocks/{code}/kline?indicators=ma5,macd_bar,...` 传入 `indicators` 时，额外返回与 bars 按 `trade_date` 对齐的**逐 bar 指标**，响应体变为 `{bars, indicators}`（不传则仍只返回 bars 数组，向后兼容）。由 `IndicatorService.KlineIndicators` 实现「**快照优先 + 实时补齐**」：日 K + 前复权且指标在默认快照集合内 → 读 `stock_indicator_snapshots` 区间快照（`GetSnapshotsRange`，含完整历史预热、口径统一）；周/月 K、后复权、非默认指标（如 `ma120`）或快照缺口 → 在返回 bars 上逐 bar `bars[:i+1]` point-in-time 实时计算补齐。单指标数据不足则该 bar 跳过该指标、不影响其它指标。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量副图绘制（前端不再手算）。
 - 所有接口透传 `ctx`（超时中断），降级返回 stale。
 
 ### M5 鉴权与凭证管理
