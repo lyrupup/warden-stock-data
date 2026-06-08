@@ -54,7 +54,7 @@ src/
 │       ├── confirm-dialog/      # 二次确认（吊销凭证等危险操作）
 │       ├── secret-reveal-dialog/# secretKey 一次性展示 + 复制
 │       ├── page-header/         # 页面标题/操作区
-│       ├── kline-chart/         # K 线图 + 均线叠加 + 成交量副图
+│       ├── kline-chart/         # K 线图：MA/BOLL 主图叠加(二选一) + 副图浮动图例 + 左滑加载更多
 │       ├── intraday-chart/      # 分时图：价格线 + 均价线 + 昨收基准 + 分时量副图
 │       └── empty-state/         # 空态/错误降级
 ├── features/
@@ -234,18 +234,26 @@ interface IAuthState {
 - **个股行情详情**：`/market/quote/:code` 按路由 `code` 拉取数据，三态处理：
   - **加载中**：拉取快照时展示 Loading（spinner + 提示）。
   - **错误 / 无数据**：股票不存在或拉取失败时展示错误卡片与「返回搜索」入口。
-  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图 + 乖离副图 + 做 T 研判，60s 轮询，见 §6.5）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5~MA120/BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量 可切换副图 + 成交量副图）+ 指标快照面板。
+  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图 + 乖离副图 + 做 T 研判，60s 轮询，见 §6.5）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + **主图叠加二选一（均线 MA / 布林 BOLL，互斥避免线过多）** + MACD/KDJ/RSI/ATR/动量 可切换副图 + 成交量副图）+ 指标快照面板。
 
-> **K 线指标改为读接口（不再前端手算）**：图表所有指标值来自 `GET /admin/market/stocks/{code}/kline?indicators=...`（`useStockKlineIndicators`），返回 `{bars, indicators}`，前端按 `trade_date` 对齐绘制。详情页指标开关（BOLL + MACD/KDJ/RSI/ATR/动量）经 `indicatorTypesFor()` 推导出请求的指标类型集合一次性拉取；`kline-chart.tsx` 保留 `computeMA` 导出仅供其它模块复用，绘图不再调用。
+> **K 线指标改为读接口（不再前端手算）**：图表所有指标值来自 `GET /admin/market/stocks/{code}/kline?indicators=...`（`useStockKlineIndicators`），返回 `{bars, indicators}`，前端按 `trade_date` 对齐绘制。`kline-chart.tsx` 保留 `computeMA` 导出仅供其它模块复用，绘图不再调用。
+
+> **K 线图绘制优化要点**：
+> - **主图叠加单选**：均线 MA 与布林 BOLL 二选一（Tab 切换），均线模式下仍可多选 5~120 周期，避免主图线过多。
+> - **副图浮动图例**：仿分时图，每个副图窗格（含主图 OHLC、成交量）注入浮动图例，标注**副图说明**与随 hover 同步的**指标值**。
+> - **切换不重绘 K 线**：详情页固定请求**全量指标**（`ALL_INDICATOR_TYPES`，queryKey 不变命中缓存），开关 MA/BOLL/副图仅在前端增删对应系列/窗格，**不重拉、不重绘 K 线（无闪烁）**；图表仅创建一次，高度变化经 `applyOptions` 平滑调整。
+> - **左滑加载更多 + 右侧锁定**：左滑接近左边界经 `subscribeVisibleLogicalRangeChange` 回调，按 `KLINE_PAGE=120` 步进 `offset` 分页拉取更早 K 线（`useStockKlineInfinite` + `useInfiniteQuery`，每页仅 120 根非全量；各页倒序拼接为升序整体序列）；响应 `has_more=false` 时 `fixLeftEdge` 锁定左边界，每次滑到最左端 toast 提示「最老K线了哦！」；`timeScale.fixRightEdge` 锁定右侧最新一根，禁止右滑越过最新日期进入空白。
 
 ### 6.4 运维（features/ops）
 
 - **数据源**：`GET /admin/datasources` 展示 source/market/优先级/健康状态；`PUT` 配置启停 / 连接池；「探测」按钮 → `POST .../healthcheck`。页面顶部新增两块运维面板（数据 `GET /admin/freshness`）：
   - **数据完整性与新鲜度**：最新交易日 / K 线更新至 / 指标快照最新日 / 起始日 / 证券总数 / 最近扫描；**日 K 线覆盖率**（`kline_stock_count`÷证券总数）与**指标快照覆盖率**（最新快照日覆盖股数÷证券总数）进度条；默认逐日快照指标集合 `default_snapshot_types` 标签展示。
   - **数据存储与计算策略**：静态矩阵，标注日 K（落库快照）/ 周月 K（实时回源不落库）/ 分时（实时透传）/ 日线指标（快照）/ 周月指标 + 非默认指标（实时计算）各自的存储方式、计算时机、落库表与接口，便于运维区分。
-- **更新作业**：
+- **更新作业（五类）**：作业卡片标题旁有 ⓘ，hover 展示该类作业行为说明（`job-run-dialog.tsx` 与 `jobs-page.tsx` 内 `JOB_TYPE_LABEL`/`JOB_TYPE_HINT`）。五类：证券列表同步 / 全量日K数据回补 / 增量日K数据回补 / 全量日K技术数据回补 / 增量日K技术数据回补。
   - 作业配置表单：cron 表达式（默认 `0 0 17 * * *`）、分批大小（默认 20）、并发度（默认 10）、启停 → `PUT /admin/jobs/:id`。
-  - 手动触发：选择类型（全量/增量/快照/指标）+ 市场 + 可选代码 → `POST /admin/jobs/:id/run`，返回 runId 后跳到进度视图。
+  - 手动触发（`JobRunDialog`）：点击「手动触发」弹窗选择**触发范围**——全量股票，或「指定股票代码」（复用 `useStockSearch` 搜索添加 + 批量粘贴 + 可移除 chips）→ `POST /admin/jobs/:id/run`（`codes` 留空=全量、传入=仅这些代码），返回 runId 后进入进度视图。
+  - 未成功代码补数（`FailedCodesDialog`）：执行完成卡片与执行记录表会展示 `failed_codes` 的「未成功 N 个」入口，弹窗可复制全部失败代码，或「重跑这些代码」（以同作业 + scope=指定代码再次触发）。
+  - 无行情代码查看（`SkippedCodesDialog`）：执行完成卡片与执行记录表会展示 `skipped_codes` 的「无行情 N 个」入口，弹窗可复制全部跳过代码；这类标的属「已登记但暂无任何成交行情」的正常状态（典型为新股尚未上市），不计入失败，无需重跑。
   - 执行记录：`GET /admin/jobs/runs` 分页表格；运行中行用 `use-polling-query` 轮询进度条（processed/total）；可取消运行中作业。
   - 编辑作业：每个作业卡片提供「编辑」按钮，弹窗修改名称 / 市场 / cron / 分批 / 并发 / 启停（`job_type` 只读）；`cron_expr` 前端粗校验 + 服务端 `PUT /admin/jobs/:id` 权威校验，错误信息回显弹窗。
   - 数据新鲜度：`GET /admin/freshness` 展示「全市场更新到哪个交易日 / 最近扫描时间 / 证券数 / 行情数据覆盖率（已入库股票数 ÷ 证券总数）」。

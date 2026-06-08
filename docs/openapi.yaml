@@ -277,9 +277,20 @@ paths:
             schema:
               type: object
               properties:
-                type: { type: string, enum: [full, incremental, snapshot, indicator, securities], default: incremental, description: "securities：仅同步证券列表（轻量，不拉 K 线）；incremental：按 watermark 仅更新落后标的" }
+                type:
+                  type: string
+                  enum: [securities, full, incremental, indicator_full, indicator_incremental]
+                  default: incremental
+                  description: >-
+                    五类作业（K 线拉取与指标计算解耦）：
+                    securities=证券列表同步（轻量，不拉 K 线）；
+                    full=全量日K数据回补（整体覆盖历史日 K）；
+                    incremental=增量日K数据回补（补齐并覆盖最新一日日 K，留空 codes 时按 watermark 仅更新落后标的）；
+                    indicator_full=全量日K技术数据回补（逐日重算全部指标快照）；
+                    indicator_incremental=增量日K技术数据回补（算最新一日指标快照）。
+                    兼容旧值 snapshot/indicator（等价 indicator_incremental）。
                 market: { type: string, default: CN }
-                codes: { type: array, items: { type: string }, description: "为空表示全市场；增量类型留空时按 watermark 自动筛待更新" }
+                codes: { type: array, items: { type: string }, description: "触发范围：为空表示全量股票（按证券列表）；传入则仅处理这些代码，便于个别股票单独补数。增量类型留空时按 watermark 自动筛待更新" }
       responses:
         "200":
           description: |
@@ -424,8 +435,9 @@ paths:
         - { in: path, name: code, required: true, schema: { type: string } }
         - { in: query, name: period, schema: { type: string, enum: [day, week, month], default: day } }
         - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
-        - { in: query, name: limit, schema: { type: integer, default: 120 } }
-        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型；传入则返回 {bars, indicators}（前端 K 线图绘制用）" }
+        - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "每页根数；与 from/to 互斥" }
+        - { in: query, name: offset, schema: { type: integer, default: 0 }, description: "自最新交易日向历史跳过的根数，配合 limit 分页加载更早 K 线" }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型；传入则返回 {bars, indicators, has_more}" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -546,10 +558,11 @@ paths:
         - { in: path, name: code, required: true, schema: { type: string } }
         - { in: query, name: period, schema: { type: string, enum: [day, week, month, 1m, 5m, 15m, 30m, 60m], default: day } }
         - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
-        - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "最近 N 根；与 from/to 互斥，区间优先" }
+        - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "每页根数；与 from/to 互斥，区间优先" }
+        - { in: query, name: offset, schema: { type: integer, default: 0 }, description: "自最新交易日向历史跳过的根数，配合 limit 分页加载更早 K 线" }
         - { in: query, name: from, schema: { type: string, format: date }, description: "起始交易日（含），回测区间用" }
         - { in: query, name: to, schema: { type: string, format: date }, description: "结束交易日（含），回测区间用" }
-        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型(取值见 /open/v1/meta 的 indicators)；传入则返回 {bars, indicators}" }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型(取值见 /open/v1/meta 的 indicators)；传入则返回 {bars, indicators, has_more}" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -817,7 +830,7 @@ components:
       properties:
         id: { type: integer }
         name: { type: string }
-        job_type: { type: string, enum: [full, incremental, snapshot, indicator, securities] }
+        job_type: { type: string, enum: [securities, full, incremental, indicator_full, indicator_incremental, snapshot, indicator], description: "五类作业 + 兼容旧值 snapshot/indicator" }
         market: { type: string, example: CN }
         cron_expr: { type: string, example: "0 0 17 * * *" }
         batch_size: { type: integer, example: 20 }
@@ -829,13 +842,16 @@ components:
       properties:
         id: { type: integer }
         job_id: { type: integer }
-        job_type: { type: string, enum: [full, incremental, snapshot, indicator, securities] }
+        job_type: { type: string, enum: [securities, full, incremental, indicator_full, indicator_incremental, snapshot, indicator] }
         market: { type: string, example: CN }
         status: { type: string, enum: [waiting, running, done, failed, canceled], description: "waiting：同类型已有运行中作业，排队等待；可被取消" }
         total: { type: integer }
         processed: { type: integer }
         succeeded: { type: integer }
         failed: { type: integer }
+        skipped: { type: integer, description: "本次因「无行情/未上市」而跳过的标的数量（数据源既无日 K 又无有效快照，属正常状态，不计入失败）" }
+        failed_codes: { type: string, description: "本次未成功/未完整处理的标的代码（逗号分隔，超量截断并附计数），便于针对个别股票单独重跑补数" }
+        skipped_codes: { type: string, description: "本次因「无行情/未上市」跳过的标的代码（逗号分隔，超量截断并附计数），便于识别暂未上市/停牌无量价的正常无数据标的" }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time, nullable: true }
         error_msg: { type: string }
@@ -949,6 +965,9 @@ components:
         indicators:
           type: array
           items: { $ref: "#/components/schemas/IndicatorResult" }
+        has_more:
+          type: boolean
+          description: "当前窗口左侧（更早方向）是否还有可分页加载的历史 K 线"
 
     Meta:
       type: object

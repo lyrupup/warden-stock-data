@@ -318,7 +318,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_quotes_code_date ON stock_quotes(stock_code
 CREATE TABLE IF NOT EXISTS update_jobs (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(64) NOT NULL,
-    job_type VARCHAR(16) NOT NULL,          -- full / incremental / snapshot / indicator
+    job_type VARCHAR(32) NOT NULL,          -- securities / full / incremental / indicator_full / indicator_incremental
     market VARCHAR(8) NOT NULL DEFAULT 'CN',
     cron_expr VARCHAR(64) NOT NULL DEFAULT '0 0 17 * * *', -- 默认每日 17:00
     batch_size INT NOT NULL DEFAULT 20,     -- 默认分批 20
@@ -332,11 +332,16 @@ CREATE TABLE IF NOT EXISTS update_jobs (
 CREATE TABLE IF NOT EXISTS update_job_runs (
     id BIGSERIAL PRIMARY KEY,
     job_id BIGINT NOT NULL,
-    status VARCHAR(16) NOT NULL DEFAULT 'running', -- running/done/failed/canceled
+    job_type VARCHAR(32) NOT NULL DEFAULT '', -- 与触发作业一致，支撑同类型排队定位
+    market VARCHAR(8) NOT NULL DEFAULT 'CN',
+    status VARCHAR(16) NOT NULL DEFAULT 'running', -- waiting/running/done/failed/canceled
     total INT NOT NULL DEFAULT 0,
     processed INT NOT NULL DEFAULT 0,
     succeeded INT NOT NULL DEFAULT 0,
     failed INT NOT NULL DEFAULT 0,
+    skipped INT NOT NULL DEFAULT 0,  -- 无行情/未上市跳过数（不计入失败）
+    failed_codes TEXT NOT NULL DEFAULT '',  -- 未成功/未完整处理的标的代码（逗号分隔，超量截断附计数）
+    skipped_codes TEXT NOT NULL DEFAULT '',  -- 无行情/未上市跳过的标的代码（逗号分隔，超量截断附计数）
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at TIMESTAMPTZ,
     error_msg TEXT NOT NULL DEFAULT ''
@@ -453,7 +458,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | POST | `/admin/datasources/:id/healthcheck` | 触发连通性探测 |
 | GET | `/admin/jobs` | 更新作业列表 |
 | PUT | `/admin/jobs/:id` | 配置作业（名称 / 市场 / cron / 分批 / 并发 / 启停；`job_type` 与时间字段不可改，`cron_expr` 服务端校验格式） |
-| POST | `/admin/jobs/:id/run` | 手动触发一次（`{type,market,codes?}`） → `{runId}` |
+| POST | `/admin/jobs/:id/run` | 手动触发一次（`{type,market,codes?}`，`codes` 留空=全量股票、传入=仅这些代码补数） → `{runId}` |
 | POST | `/admin/jobs/runs/:runId/cancel` | 取消运行中作业 |
 | GET | `/admin/jobs/runs` | 执行记录（分页，含进度） |
 | GET | `/admin/jobs/runs/:runId` | 单次执行详情 / 进度 |
@@ -468,7 +473,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | GET | `/open/v1/indices` | 大盘指数（`?market=CN`） |
 | GET | `/open/v1/quotes?codes=600000,000001` | 批量个股快照 |
 | GET | `/open/v1/stocks/:code` | 单只个股快照 |
-| GET | `/open/v1/stocks/:code/kline?period=day&adjust=qfq&limit=120` | K 线（支持 `from`/`to` 交易日区间，回测取历史区间用） |
+| GET | `/open/v1/stocks/:code/kline?period=day&adjust=qfq&limit=120&offset=0` | K 线（`limit`+`offset` 分页：跳过最近 offset 根、取 limit 根；带 `indicators` 时响应含 `has_more`；亦支持 `from`/`to` 区间，回测用） |
 | GET | `/open/v1/stocks/:code/intraday` | 分时走势（实时透传：价格线 + 均价线 + 分时量；不落库；非交易日自动回退最近交易日，`trade_date` 标注实际日期） |
 | GET | `/open/v1/stocks/:code/indicators?types=ma5,ma10,ma20,ma30,ma60` | 单只实时指标 |
 | GET | `/open/v1/indicators?codes=...&types=ma5,ma60&trade_date=` | 批量指标（读快照） |
@@ -494,6 +499,7 @@ type IMarketProvider interface {
     Indices(ctx context.Context) ([]model.IndexQuote, error)
     Quotes(ctx context.Context, codes []string) ([]model.StockQuote, error)
     Kline(ctx context.Context, code, period, adjust string) ([]model.Kline, error)
+    KlineFull(ctx context.Context, code, period, adjust string) ([]model.Kline, error) // 分页拉全历史，全量回补用
     Search(ctx context.Context, kw string) ([]model.StockBrief, error)
     StockList(ctx context.Context) ([]model.StockBrief, error)  // 全市场证券列表（回补/扫描用）
     HealthCheck(ctx context.Context) error
@@ -509,7 +515,7 @@ func NewProvider(market string, sources []DataSourceConfig) IMarketProvider {
 }
 ```
 
-- **gotdx 适配器**：`gotdx_pool.go`（连接池，见下）、`gotdx_provider.go`（`safeCall` 防 panic、懒加载证券名索引、`withClient(ctx, fn)` 借池执行）、`gotdx_mapper.go`（价格 /100、/1000 量纲还原，换手率 /10000）。`StockList` 基于 `StockAll(market)` 并过滤为 A 股个股。
+- **gotdx 适配器**：`gotdx_pool.go`（连接池，见下）、`gotdx_provider.go` + `gotdx_kline.go`（`Kline` 单页最近 600 根；`KlineFull` 分页回溯全历史）、`gotdx_mapper.go`（价格 /100、/1000 量纲还原，换手率 /10000）。`StockList` 基于 `StockAll(market)` 并过滤为 A 股个股。
 - **单元测试**：以测试内置的 fake provider（`internal/service/fake_provider_test.go`）注入确定性行情数据，不依赖外部网络。
 - **扩展**：新增市场/源 = 新增实现 `IMarketProvider` 的适配器 + 工厂注册，零侵入 M2/M3/M4。
 
@@ -558,17 +564,26 @@ func (p *GotdxProvider) Close() error
   watermark = max(bars 最新日期, latest)
 ```
 
-> **按 watermark 筛待更新（性能）**：`incremental` 类型且未显式指定 `codes` 时，`JobRunner.Run` 先用 `UpdateService.PendingCodes` 以「库内 K 线最大交易日」为基准过滤，仅对落后/新股发起数据源请求；盘后多数标的已最新时，请求量可从全市场约 5200 次降到个位/十位数。`full`/`indicator` 类型与显式指定 `codes` 不参与该过滤。
+> **按 watermark 筛待更新（性能）**：`incremental` 类型且未显式指定 `codes` 时，`JobRunner.Run` 先用 `UpdateService.PendingCodes` 以「库内 K 线最大交易日」为基准过滤，仅对落后/新股发起数据源请求；盘后多数标的已最新时，请求量可从全市场约 5200 次降到个位/十位数。`full`/`indicator_*` 类型与显式指定 `codes` 不参与该过滤（全量与指定代码均强制处理并覆盖更新）。
 
 > **水位对齐避免重复拉取（停牌/次新股）**：`IncrementalOne` 拉取成功后，即便本轮无新 K 线，也将 `watermark` 推进到「数据源可得最新日期」与「全市场最新交易日 `marketLatest`」中的较新者。否则停牌 / 尚未复牌的次新股因个股最新交易日永远落后于全市场，会被每轮增量反复选中、无效拉取（症状：增量 `pending` 数始终不归零）。对齐后这些个股不再被选中，直到全市场出现新交易日才会重试。`marketLatest` 由 `JobRunner.Run` 调 `UpdateService.MarketLatestTradeDate` 取一次后传入逐只处理。
 
-> **作业类型**：`incremental`（增量 K 线+指标）、`full`（全量回补 K 线+逐日指标）、`indicator`/`snapshot`（仅指标）、`securities`（**仅同步证券列表**：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口，作为新股入库的轻量入口）。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`daily-incremental` 17:00、`securities-sync` 8:30），存量库也会自动补上后加入的默认作业。
+> **作业类型（五类，K 线拉取与指标计算解耦）**：由 `JobRunner.runOne` 按 `job_type` 分发，职责单一：
+> - `securities` 证券列表同步：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口；
+> - `full` 全量日K数据回补：`SyncKlineFull` 经 `provider.KlineFull` **分页拉取**数据源全部历史日 K 并**整体覆盖**落库（已有日期一并 UPSERT 覆盖），推进水位，不算指标；
+> - `incremental` 增量日K数据回补：`IncrementalOne` 落库「水位日及之后」的日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位，不算指标；
+> - `indicator_full` 全量日K技术数据回补：`BackfillIndicators` 基于库内全量日 K **逐日重算**全部指标快照（全量覆盖）；
+> - `indicator_incremental` 增量日K技术数据回补：`ScanIndicators` 基于库内日 K 计算**最新一日**指标快照（覆盖）。
+>
+> 旧值 `snapshot`/`indicator` 兼容映射到 `indicator_incremental`。指标类作业遇标的无可用日 K（`ErrNoKline`）计为失败，提示先回补日 K。盘后链路：增量日K(17:00) → 增量指标(17:30)；全量回补类开销大，`EnsureDefaults` 默认**停用**。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`securities-sync` 8:30、`daily-incremental` 17:00、`daily-indicator-incremental` 17:30、`kline-full-backfill` 周六 4:00（停用）、`indicator-full-backfill` 周六 6:00（停用）），存量库也会自动补上后加入的默认作业。
+
+> **触发范围与失败代码补数**：手动触发 `POST /admin/jobs/{id}/run` 支持 `codes`：留空=全量股票（按证券列表），传入=仅处理这些代码（便于个别股票单独补数）。每次执行把未成功/未完整处理的标的代码收集进 `update_job_runs.failed_codes`（逗号分隔，超 500 个截断并附计数），管理后台据此可「查看未成功代码 → 复制 / 一键仅重跑这些代码」。**无行情/未上市识别**：当数据源对某标的「既无历史日 K、又无有效实时快照（量价全 0）」时，返回 `ErrNoMarketData`，计入 `skipped`/`skipped_codes`（不计入失败），便于与真正拉取失败区分。
 
 - **全市场扫描计算**（补齐原系统遗留缺口）：拉全市场 `securities` → 并发（信号量 channel + WaitGroup，迁移自原粗筛引擎）逐只拉 K 线 → 调 M3 指标引擎算默认指标集合 `defaultSnapshotTypes` → upsert `stock_indicator_snapshots`。单只失败跳过不中断，`ctx` 取消即时退出。
   - **默认落库指标集合（回测友好）**：`ma5/10/20/30/60` + `macd_dif/dea/bar` + `kdj_k/d/j` + `rsi6/12/24` + `boll_mid/upper/lower` + `atr14/atr20` + `pct_change20/60`（见 `internal/service/update_service.go:defaultSnapshotTypes`）。指标值统一存 `values`（JSONB），新增指标无需改表结构；接入方做量化回测时按 `trade_date` 直接读 point-in-time 历史指标，无需重算。
   - **数据不足处理**：`ComputeAll` 任一指标数据不足即跳过该日快照（早期不足 60 根的历史日因 MA60 无法计算自然跳过），保证 point-in-time 一致；其余长尾指标（如 bias、vol_ratio）不入默认快照，走单只实时接口按需计算。
   - **JSONB 合并写入（避免子集扫描丢字段）**：`IndicatorRepository.UpsertSnapshot` 冲突时按 `values = COALESCE(已有,'{}') || excluded.values` **JSONB 合并**（同键以新值为准），而非整行覆盖。好处：① 用更小的 `types` 子集再次扫描不会抹掉该日已落库的其它指标；② 新增指标可增量补字段，无需整库回填即可逐步补齐（但要把历史区间一次性补齐仍建议跑 `full` 作业逐日回算）。注意：若从默认集合移除某指标，合并语义会**保留其历史旧值**（陈旧键），如需清除需单独处理。
-  - **快照更新触发**：日常由默认 `daily-incremental`（17:00）逐日写「最新交易日」快照（`ScanIndicators`）；要为历史区间补齐新增指标，需跑 `full` 作业 / `cmd/backfill`（`BackfillIndicators` 逐日 point-in-time 回算）。`indicator`/`incremental` 作业只更新最新一天。
+  - **快照更新触发**：日常由默认 `daily-indicator-incremental`（17:30，在增量日K之后）逐日写「最新交易日」快照（`ScanIndicators`）；要为历史区间补齐新增指标，需跑 `indicator_full` 作业 / `cmd/backfill`（`BackfillIndicators` 逐日 point-in-time 回算）。`indicator_incremental` 只更新最新一天；注意 `incremental` 作业现仅拉日 K、不再附带算指标（与 `indicator_incremental` 解耦）。
 - **逐历史交易日指标快照（point-in-time，回测友好）**：`stock_indicator_snapshots` 以 `(market, code, trade_date)` 为唯一键，每个历史交易日一行。扫描支持两种模式：
   - **增量模式**（盘后默认）：只为「最新交易日」算并 upsert 一行。
   - **回补模式**（首次 / 指定区间）：对 `[from, to]` 内每个交易日 `t`，用截止 `t` 的 K 线序列切片 `Bars[0:idx(t)+1]` 计算指标并 upsert，**无未来函数**。接入方回测时按 `trade_date` 直接读历史指标，无需重算。
@@ -641,7 +656,7 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 
 - Handler 仅做绑定 + 调 service + 组装；service 复用 M1/M2/M3。
 - 指标接口：`?types=ma5,ma60` → 优先快照、缺失则实时算；批量接口强制走快照（性能）。
-- **K 线带指标**：`/stocks/{code}/kline?indicators=ma5,macd_bar,...` 传入 `indicators` 时，额外返回与 bars 按 `trade_date` 对齐的**逐 bar 指标**，响应体变为 `{bars, indicators}`（不传则仍只返回 bars 数组，向后兼容）。由 `IndicatorService.KlineIndicators` 实现「**快照优先 + 实时补齐**」：日 K + 前复权且指标在默认快照集合内 → 读 `stock_indicator_snapshots` 区间快照（`GetSnapshotsRange`，含完整历史预热、口径统一）；周/月 K、后复权、非默认指标（如 `ma120`）或快照缺口 → 在返回 bars 上逐 bar `bars[:i+1]` point-in-time 实时计算补齐。单指标数据不足则该 bar 跳过该指标、不影响其它指标。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量副图绘制（前端不再手算）。
+- **K 线带指标**：`/stocks/{code}/kline?indicators=ma5,macd_bar,...` 传入 `indicators` 时，额外返回与 bars 按 `trade_date` 对齐的**逐 bar 指标**，响应体变为 `{bars, indicators, has_more}`（不传则仍只返回 bars 数组，向后兼容）。`limit`+`offset` 分页：跳过最近 `offset` 根、取 `limit` 根历史窗口；`has_more` 表示窗口左侧是否还有更早数据（供前端左滑加载更多）。日 K 走 `KlineRepository.ListPage`（`LIMIT limit+1 OFFSET offset` 探测 hasMore）；周/月 K 或未落库时回源后在内存 `windowBars` 切片。由 `IndicatorService.KlineIndicators` 实现「**快照优先 + 实时补齐**」：日 K + 前复权且指标在默认快照集合内 → 读 `stock_indicator_snapshots` 区间快照（`GetSnapshotsRange`，含完整历史预热、口径统一）；周/月 K、后复权、非默认指标（如 `ma120`）或快照缺口 → 在返回 bars 上逐 bar `bars[:i+1]` point-in-time 实时计算补齐。单指标数据不足则该 bar 跳过该指标、不影响其它指标。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量副图绘制（前端不再手算）。
 - 所有接口透传 `ctx`（超时中断），降级返回 stale。
 
 ### M5 鉴权与凭证管理

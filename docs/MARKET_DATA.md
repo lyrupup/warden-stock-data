@@ -104,14 +104,23 @@ bars, err := s.provider.Kline(ctx, q.Code, q.Period, adjust)
 
 ### 3.4 gotdx 拉取与周期映射
 
-`GotdxProvider.Kline`（`gotdx_provider.go`）：
+`GotdxProvider` 提供两档 K 线拉取（`gotdx_provider.go` + `gotdx_kline.go`）：
+
+| 方法 | 用途 | 行为 |
+|------|------|------|
+| `Kline` | API 透传、增量落库 | 单次 `GetSecurityBars(start=0, count=600)`，约 2.5 年日线 |
+| `KlineFull` | 全量日K回补作业 | `start` 递增分页（每页 600 根），回溯至历史尽头后合并去重 |
 
 ```go
-reply, err := c.GetSecurityBars(klineType, mkt, code, 0, 600)
+// 单页（Kline）
+raw, _ := fetchKlinePage(c, klineType, mkt, code, 0, 600)
+
+// 全历史（KlineFull / SyncKlineFull）
+bars, _ := fetchKlineAll(ctx, c, klineType, mkt, code, adjust)
 ```
 
-- 调 gotdx `GetSecurityBars`，单次取 **600 根**（约 2.5 年日线）。
-- **count 上限注意**：实测 `count=800` 会触发 TDX 返回异常短帧导致 gotdx 解析 panic，`<=600` 稳定。
+- **count 上限注意**：实测 `count=800` 会触发 TDX 返回异常短帧导致 gotdx 解析 panic，`<=600` 稳定；全量回补通过分页规避该限制。
+- **分页安全上限**：最多 100 页（约 6 万根），防止异常数据死循环。
 
 周期映射 `klineTypeOf`（`gotdx_mapper.go`）：
 
@@ -126,13 +135,13 @@ reply, err := c.GetSecurityBars(klineType, mkt, code, 0, 600)
 
 ### 3.5 增量落库（盘后定时）
 
-库内日 K 由 `UpdateService.IncrementalOne`（`update_service.go`）写入，由调度器盘后触发（默认 17:00）：
+库内日 K 由 `UpdateService.IncrementalOne`（`update_service.go`）写入，由调度器盘后触发（默认增量日K 17:00）：
 
 ```
 读个股水位 wm(last_trade_date)
   → provider.Kline(code, "day", "qfq")    # 实时拉 TDX
-  → filterAfterWatermark(bars, wm)         # 仅保留水位之后的新交易日
-  → klineRepo.UpsertBatch(newBars)         # 有新数据才写
+  → filterFromWatermark(bars, wm)          # 保留「水位日及之后」（含水位日本身，覆盖最新一日）
+  → klineRepo.UpsertBatch(newBars)         # UPSERT：新交易日新增、最新一日覆盖更新
   → calRepo.UpsertInferred(dates)          # 用实际成交日反推校正交易日历
   → 推进 watermark 到 max(数据源最新, 全市场最新交易日)
 ```
@@ -141,7 +150,40 @@ reply, err := c.GetSecurityBars(klineType, mkt, code, 0, 600)
 - **`PendingCodes` 预筛**：增量更新前，用「库内 K 线 `MAX(trade_date)`」为基准，仅挑「无水位（新股）或水位落后」的标的发起 TDX 请求，盘后多数已最新时请求量可从全市场约 5200 次降到个位/十位数。
 - **水位对齐避免反复拉取**：即便本轮无新 K 线（停牌/次新股），也把水位推进到全市场最新交易日，否则这些股票会因永远落后而每轮被反复无效拉取。
 
+> **含水位日覆盖**：`filterFromWatermark` 保留「水位日及之后」（含水位日本身），借 UPSERT 覆盖更新最新一日已有数据；这与「全量回补」的「整体覆盖全部历史」区别在于覆盖范围。
 > 复权口径：增量落库固定以 **`qfq`（前复权）** 存储，作为指标计算与全市场扫描的统一底座。
+
+### 3.6 五类更新作业（K 线拉取与指标计算解耦）
+
+行情数据的写入由调度器（`scheduler`）按 `job_type` 分发执行（`JobRunner.runOne`），细分为**五类**，把「K 线拉取」与「技术指标计算」彻底解耦，便于按需单独触发与补数。每类作业可手动触发（管理后台）或按 cron 定时执行（仅交易日）。
+
+| job_type | 名称 | 处理方法 | 拉 K 线 | 算指标 | 覆盖范围 |
+|----------|------|----------|:------:|:------:|----------|
+| `securities` | 证券列表同步 | `SyncSecuritiesList` | ❌ | ❌ | 同步 gotdx 证券列表（代码/名称/板块） |
+| `full` | 全量日K数据回补 | `SyncKlineFull` | ✅ | ❌ | 拉数据源全部历史日 K，**整体覆盖**落库（已有日期一并覆盖） |
+| `incremental` | 增量日K数据回补 | `IncrementalOne` | ✅ | ❌ | 落库「水位日及之后」日 K，**覆盖最新一日**、补齐缺口 |
+| `indicator_full` | 全量日K技术数据回补 | `BackfillIndicators` | ❌ | ✅ | 基于库内全量日 K **逐日重算**全部指标快照（全量覆盖） |
+| `indicator_incremental` | 增量日K技术数据回补 | `ScanIndicators` | ❌ | ✅ | 基于库内日 K 计算**最新一日**指标快照（覆盖） |
+
+各作业说明：
+
+1. **证券列表同步（`securities`）**：调一次 `SyncSecuritiesList` 从 gotdx 拉全市场证券列表并 UPSERT 入库（发现新股 / 更新名称、板块、状态），几秒完成，**不触达 K 线接口**，是新股入库的轻量入口。其余四类作业在未显式指定 `codes` 时，会以证券列表为标的全集逐只处理。
+
+2. **全量日K数据回补（`full`）**：对每只标的 `provider.KlineFull(code, "day", "qfq")` **分页拉取**数据源全部历史日 K（每页 600 根回溯至尽头），整体 `UpsertBatch` 落库——已存在日期的日 K 也一并 UPSERT **覆盖更新**（修复历史错漏 / 复权口径变化），随后推进水位到最新交易日。仅按最新一日补登交易日历，避免在多标的间重复写入海量冗余日历。**不计算指标**。开销大，默认停用（默认 cron 周六 4:00），按需手动触发。
+
+3. **增量日K数据回补（`incremental`）**：见 3.5。落库「水位日及之后」日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位。未指定 `codes` 时经 `PendingCodes` 预筛仅处理落后标的（性能）。**不计算指标**。默认 cron 17:00。
+
+4. **全量日K技术数据回补（`indicator_full`）**：基于库内**已落库的全量日 K**，对每只标的逐历史交易日 `point-in-time` 重算系统支持的全部默认指标（`defaultSnapshotTypes`：MA5~60 / MACD / KDJ / RSI / BOLL / ATR / 动量等），**全量覆盖**写 `stock_indicator_snapshots`。不拉行情。开销大，默认停用（默认 cron 周六 6:00）。
+
+5. **增量日K技术数据回补（`indicator_incremental`）**：基于库内日 K（最近 120 根）计算**最新一日** K 线的各项指标快照，覆盖写入。不拉行情。默认 cron 17:30（在增量日K之后），与增量日K作业接力形成盘后链路：**增量日K(17:00) → 增量指标(17:30)**。
+
+> **解耦要点**：`incremental` 作业现在**仅拉日 K、不再附带算指标**（历史版本曾合并），指标改由独立的 `indicator_incremental` 负责。旧值 `snapshot`/`indicator` 兼容映射到 `indicator_incremental`。
+>
+> **失败与跳过提示**：指标类作业遇标的无可用日 K 时返回 `ErrNoKline`，该标的计为「未成功」；每次执行把未成功/未完整处理的代码收集进 `update_job_runs.failed_codes`（逗号分隔，超量截断附计数），便于在管理后台「复制 / 一键仅重跑这些代码」单独补数。**无行情/未上市识别**：当数据源对某标的「既无历史日 K、又无有效实时快照（量价全 0）」时，返回 `ErrNoMarketData`，计入 `skipped`/`skipped_codes`（不计入失败），典型为新股尚未上市交易或长期停牌无量价。
+>
+> **触发范围**：手动触发支持 `codes`——留空=全量股票（按证券列表）；传入=仅处理这些代码（个别股票单独补数）。指定 `codes` 与 `full`/`indicator_*` 类型均**不参与** `PendingCodes` 预筛，强制处理并覆盖更新。
+>
+> **同类型排队（FIFO）**：手动 / 定时触发统一走 `JobRunner.Submit`，同 `job_type` 已有 `running` 时新作业落 `waiting` 入队，前序完成后自动接力（详见 `docs/BACKEND.md` M2）。
 
 ---
 
