@@ -12,7 +12,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { changeColor, formatPrice, formatVolume, toNumber } from "@/lib/decimal";
-import type { TKline } from "@/types/market";
+import type { TIndicatorResult, TKline } from "@/types/market";
 
 /** 可叠加的 MA 周期，覆盖国内常用 5/10/20/30/60/120 日均线 */
 export const MA_PERIODS = [5, 10, 20, 30, 60, 120] as const;
@@ -28,6 +28,78 @@ export const MA_COLOR: Record<TMAPeriod, string> = {
   120: "#be185d",
 };
 
+/** BOLL 主图叠加三轨（上轨红 / 中轨紫 / 下轨蓝） */
+export const BOLL_SERIES = [
+  { type: "boll_upper", label: "UP", color: "#ea580c" },
+  { type: "boll_mid", label: "MID", color: "#a855f7" },
+  { type: "boll_lower", label: "LOW", color: "#2563eb" },
+] as const;
+
+/** 副图指标组：每组独立一个子窗格，line 画线、hist 画柱 */
+export const SUB_INDICATORS = [
+  {
+    key: "macd",
+    label: "MACD",
+    series: [
+      { type: "macd_bar", label: "BAR", kind: "hist", color: "#9ca3af" },
+      { type: "macd_dif", label: "DIF", kind: "line", color: "#ea580c" },
+      { type: "macd_dea", label: "DEA", kind: "line", color: "#2563eb" },
+    ],
+  },
+  {
+    key: "kdj",
+    label: "KDJ",
+    series: [
+      { type: "kdj_k", label: "K", kind: "line", color: "#ea580c" },
+      { type: "kdj_d", label: "D", kind: "line", color: "#2563eb" },
+      { type: "kdj_j", label: "J", kind: "line", color: "#be185d" },
+    ],
+  },
+  {
+    key: "rsi",
+    label: "RSI",
+    series: [
+      { type: "rsi6", label: "RSI6", kind: "line", color: "#ea580c" },
+      { type: "rsi12", label: "RSI12", kind: "line", color: "#2563eb" },
+      { type: "rsi24", label: "RSI24", kind: "line", color: "#be185d" },
+    ],
+  },
+  {
+    key: "atr",
+    label: "ATR",
+    series: [
+      { type: "atr14", label: "ATR14", kind: "line", color: "#ea580c" },
+      { type: "atr20", label: "ATR20", kind: "line", color: "#2563eb" },
+    ],
+  },
+  {
+    key: "mom",
+    label: "动量%",
+    series: [
+      { type: "pct_change20", label: "20日", kind: "line", color: "#ea580c" },
+      { type: "pct_change60", label: "60日", kind: "line", color: "#2563eb" },
+    ],
+  },
+] as const;
+
+export type TSubIndicatorKey = (typeof SUB_INDICATORS)[number]["key"];
+
+/** 由启用的 MA / BOLL / 副图集合推导出需要向后端请求的指标类型集合 */
+export const indicatorTypesFor = (
+  mas: readonly TMAPeriod[],
+  opts: { boll?: boolean; panes?: readonly TSubIndicatorKey[] },
+): string[] => {
+  const set = new Set<string>();
+  mas.forEach((p) => set.add(`ma${p}`));
+  if (opts.boll) BOLL_SERIES.forEach((s) => set.add(s.type));
+  (opts.panes ?? []).forEach((key) => {
+    SUB_INDICATORS.find((g) => g.key === key)?.series.forEach((s) =>
+      set.add(s.type),
+    );
+  });
+  return [...set];
+};
+
 /** A 股配色：涨红跌绿 */
 const UP_COLOR = "#dc2626";
 const DOWN_COLOR = "#16a34a";
@@ -39,7 +111,7 @@ const DOWN_VOLUME_COLOR = "rgba(22,163,74,0.7)";
 const parseTime = (date: string): UTCTimestamp =>
   Math.floor(new Date(date).getTime() / 1000) as UTCTimestamp;
 
-/** 收盘价简单移动平均；样本不足该期不输出，避免首端误导性均值 */
+/** 收盘价简单移动平均；保留导出供其它模块复用（图表绘制已改为读后端指标） */
 export const computeMA = (
   klines: TKline[],
   period: number,
@@ -62,17 +134,26 @@ export const computeMA = (
 
 type TKlineChartProps = {
   klines: TKline[];
+  /** 后端逐 bar 指标（与 klines 按 trade_date 对齐） */
+  indicators?: TIndicatorResult[];
   /** 叠加的 MA 周期集合 */
   enabledMAs?: readonly TMAPeriod[];
+  /** 主图叠加 BOLL 通道 */
+  showBoll?: boolean;
+  /** 启用的副图指标组 */
+  enabledPanes?: readonly TSubIndicatorKey[];
   height?: number;
   /** 初始可视 K 线根数；超过总数则按总数 fit。默认 60（约 3 个月日线） */
   initialVisibleBars?: number;
 };
 
-/** K 线图（lightweight-charts v5，可叠加 MA + hover OHLC 浮层） */
+/** K 线图（lightweight-charts v5）：MA/BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量 副图，指标值全部来自后端接口 */
 export const KlineChart = ({
   klines,
+  indicators = [],
   enabledMAs = [],
+  showBoll = false,
+  enabledPanes = [],
   height = 520,
   initialVisibleBars = 60,
 }: TKlineChartProps) => {
@@ -80,7 +161,7 @@ export const KlineChart = ({
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const lineRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const extraRefs = useRef<ISeriesApi<"Line" | "Histogram">[]>([]);
 
   const [hoverTime, setHoverTime] = useState<number | null>(null);
 
@@ -88,6 +169,7 @@ export const KlineChart = ({
     () => [...enabledMAs].sort((a, b) => a - b).join(","),
     [enabledMAs],
   );
+  const paneKey = useMemo(() => [...enabledPanes].join(","), [enabledPanes]);
 
   const byTime = useMemo(() => {
     const m = new Map<number, TKline>();
@@ -95,21 +177,25 @@ export const KlineChart = ({
     return m;
   }, [klines]);
 
+  // 后端逐 bar 指标：time -> { type -> number }
+  const indByTime = useMemo(() => {
+    const m = new Map<number, Record<string, number>>();
+    indicators.forEach((r) => {
+      const rec: Record<string, number> = {};
+      Object.entries(r.values).forEach(([k, v]) => {
+        rec[k] = toNumber(v);
+      });
+      m.set(parseTime(r.trade_date), rec);
+    });
+    return m;
+  }, [indicators]);
+
   const latest = klines.length > 0 ? klines[klines.length - 1] : null;
   const display =
     (hoverTime != null ? byTime.get(hoverTime) : undefined) ?? latest;
+  const displayInd = display ? indByTime.get(parseTime(display.trade_date)) : undefined;
 
-  const maMaps = useMemo(() => {
-    const out: Partial<Record<TMAPeriod, Map<number, number>>> = {};
-    for (const p of enabledMAs) {
-      out[p] = new Map(
-        computeMA(klines, p).map((it) => [it.time as number, it.value]),
-      );
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, maKey]);
-
+  // 主图/副图布局变化（高度或副图集合）时重建图表，避免遗留空窗格
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -150,10 +236,6 @@ export const KlineChart = ({
       scaleMargins: { top: 0.1, bottom: 0 },
     });
 
-    // 主图与成交量子图按 3:1 分配高度
-    chart.panes()[0]?.setStretchFactor(3);
-    chart.panes()[1]?.setStretchFactor(1);
-
     chartRef.current = chart;
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
@@ -172,17 +254,17 @@ export const KlineChart = ({
     return () => {
       observer.disconnect();
       chart.unsubscribeCrosshairMove(handler);
-      lineRefs.current.forEach((s) => chart.removeSeries(s));
-      lineRefs.current = [];
+      extraRefs.current = [];
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
       volumeRef.current = null;
     };
-  }, [height]);
+  }, [height, paneKey]);
 
   useEffect(() => {
-    if (!candleRef.current || klines.length === 0) return;
+    const chart = chartRef.current;
+    if (!chart || !candleRef.current || klines.length === 0) return;
 
     candleRef.current.setData(
       klines.map((k) => ({
@@ -205,27 +287,83 @@ export const KlineChart = ({
       })),
     );
 
-    const chart = chartRef.current;
-    if (!chart) return;
+    extraRefs.current.forEach((s) => chart.removeSeries(s));
+    extraRefs.current = [];
 
-    lineRefs.current.forEach((s) => chart.removeSeries(s));
-    lineRefs.current = [];
+    // 取某指标类型在各 bar 上的折线数据（缺失点跳过）
+    const lineOf = (type: string): LineData<UTCTimestamp>[] => {
+      const out: LineData<UTCTimestamp>[] = [];
+      for (const k of klines) {
+        const t = parseTime(k.trade_date);
+        const v = indByTime.get(t)?.[type];
+        if (v !== undefined) out.push({ time: t, value: v });
+      }
+      return out;
+    };
 
-    [...enabledMAs]
-      .sort((a, b) => a - b)
-      .forEach((p) => {
-        const data = computeMA(klines, p);
-        if (data.length === 0) return;
-        const line = chart.addSeries(LineSeries, {
-          color: MA_COLOR[p],
+    const addLine = (type: string, color: string, pane: number) => {
+      const data = lineOf(type);
+      if (data.length === 0) return;
+      const line = chart.addSeries(
+        LineSeries,
+        {
+          color,
           lineWidth: 1,
           priceLineVisible: false,
           lastValueVisible: false,
           crosshairMarkerVisible: false,
-        });
-        line.setData(data);
-        lineRefs.current.push(line);
-      });
+        },
+        pane,
+      );
+      line.setData(data);
+      extraRefs.current.push(line);
+    };
+
+    // 主图：MA 叠加
+    [...enabledMAs]
+      .sort((a, b) => a - b)
+      .forEach((p) => addLine(`ma${p}`, MA_COLOR[p], 0));
+
+    // 主图：BOLL 通道
+    if (showBoll) BOLL_SERIES.forEach((s) => addLine(s.type, s.color, 0));
+
+    // 副图：每组一个窗格（从 pane 2 起，pane 1 为成交量）
+    let paneIdx = 2;
+    for (const key of enabledPanes) {
+      const group = SUB_INDICATORS.find((g) => g.key === key);
+      if (!group) continue;
+      const idx = paneIdx;
+      for (const s of group.series) {
+        if (s.kind === "hist") {
+          const data = klines
+            .map((k) => {
+              const t = parseTime(k.trade_date);
+              const v = indByTime.get(t)?.[s.type];
+              if (v === undefined) return null;
+              return { time: t, value: v, color: v >= 0 ? UP_COLOR : DOWN_COLOR };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null);
+          if (data.length > 0) {
+            const hist = chart.addSeries(
+              HistogramSeries,
+              { priceLineVisible: false, lastValueVisible: false },
+              idx,
+            );
+            hist.setData(data);
+            extraRefs.current.push(hist);
+          }
+        } else {
+          addLine(s.type, s.color, idx);
+        }
+      }
+      paneIdx += 1;
+    }
+
+    // 窗格高度比例：主图 3，成交量 1，各副图 1.5
+    const panes = chart.panes();
+    panes[0]?.setStretchFactor(3);
+    panes[1]?.setStretchFactor(1);
+    for (let i = 2; i < panes.length; i++) panes[i]?.setStretchFactor(1.5);
 
     const bars = Math.min(initialVisibleBars, klines.length);
     if (bars > 0 && bars < klines.length) {
@@ -237,27 +375,47 @@ export const KlineChart = ({
       chart.timeScale().fitContent();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [klines, maKey, initialVisibleBars]);
-
-  const maItems = useMemo(
-    () =>
-      [...enabledMAs]
-        .sort((a, b) => a - b)
-        .map((p) => ({
-          period: p,
-          value: display
-            ? maMaps[p]?.get(parseTime(display.trade_date))
-            : undefined,
-        })),
-    [enabledMAs, display, maMaps],
-  );
+  }, [klines, indByTime, maKey, showBoll, paneKey, initialVisibleBars]);
 
   return (
     <div>
       {display ? (
         <div className="mb-3 space-y-1">
           <OhlcStrip k={display} isHover={hoverTime !== null} />
-          {maItems.length > 0 ? <MaStrip items={maItems} /> : null}
+          {enabledMAs.length > 0 ? (
+            <MaStrip
+              items={[...enabledMAs]
+                .sort((a, b) => a - b)
+                .map((p) => ({ period: p, value: displayInd?.[`ma${p}`] }))}
+            />
+          ) : null}
+          {showBoll ? (
+            <IndStrip
+              label="BOLL"
+              items={BOLL_SERIES.map((s) => ({
+                label: s.label,
+                color: s.color,
+                value: displayInd?.[s.type],
+              }))}
+              digits={2}
+            />
+          ) : null}
+          {enabledPanes.map((key) => {
+            const g = SUB_INDICATORS.find((x) => x.key === key);
+            if (!g) return null;
+            return (
+              <IndStrip
+                key={key}
+                label={g.label}
+                items={g.series.map((s) => ({
+                  label: s.label,
+                  color: s.color,
+                  value: displayInd?.[s.type],
+                }))}
+                digits={2}
+              />
+            );
+          })}
         </div>
       ) : null}
       <div
@@ -334,6 +492,25 @@ const MaStrip = ({
         style={{ color: MA_COLOR[period] }}
       >
         MA{period} {value !== undefined ? formatPrice(value) : "--"}
+      </span>
+    ))}
+  </div>
+);
+
+const IndStrip = ({
+  label,
+  items,
+  digits = 2,
+}: {
+  label: string;
+  items: { label: string; color: string; value: number | undefined }[];
+  digits?: number;
+}) => (
+  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums">
+    <span className="text-muted-foreground">{label}</span>
+    {items.map((it) => (
+      <span key={it.label} className="font-medium" style={{ color: it.color }}>
+        {it.label} {it.value !== undefined ? it.value.toFixed(digits) : "--"}
       </span>
     ))}
   </div>

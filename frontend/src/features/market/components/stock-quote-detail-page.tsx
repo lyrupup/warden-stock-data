@@ -6,7 +6,10 @@ import {
   KlineChart,
   MA_PERIODS,
   MA_COLOR,
+  SUB_INDICATORS,
+  indicatorTypesFor,
   type TMAPeriod,
+  type TSubIndicatorKey,
 } from "@/components/common/kline-chart";
 import { PageHeader } from "@/components/common/page-header";
 import { QuoteCell } from "@/components/common/quote-cell";
@@ -28,6 +31,7 @@ import {
   useStockIndicators,
   useStockIntraday,
   useStockKline,
+  useStockKlineIndicators,
   useStockQuote,
 } from "../hooks/use-market";
 
@@ -39,13 +43,28 @@ export const StockQuoteDetailPage = () => {
   const [period, setPeriod] = useState<EKlinePeriod>("day");
   const [adjust, setAdjust] = useState<EKlineAdjust>("qfq");
   const [enabledMAs, setEnabledMAs] = useState<TMAPeriod[]>(DEFAULT_MAS);
+  const [showBoll, setShowBoll] = useState(false);
+  const [enabledPanes, setEnabledPanes] = useState<TSubIndicatorKey[]>(["macd"]);
+
+  // 绘图所需指标类型 → 一次性向后端请求（前端不再手算）
+  const indicatorTypes = indicatorTypesFor(enabledMAs, {
+    boll: showBoll,
+    panes: enabledPanes,
+  });
 
   const {
     data: quote,
     isLoading,
     isError,
   } = useStockQuote(code || null);
-  const { data: klines } = useStockKline(code || null, period, adjust);
+  const { data: klineData } = useStockKlineIndicators(
+    code || null,
+    period,
+    adjust,
+    indicatorTypes,
+  );
+  const klines = klineData?.bars;
+  const klineIndicators = klineData?.indicators;
   // 做 T 历史基准固定用日线前复权，独立于上方 K 线周期选择
   const { data: dayKlines } = useStockKline(code || null, "day", "qfq");
   const { data: intraday } = useStockIntraday(code || null);
@@ -54,6 +73,10 @@ export const StockQuoteDetailPage = () => {
   const toggleMA = (p: TMAPeriod) =>
     setEnabledMAs((prev) =>
       prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p],
+    );
+  const togglePane = (key: TSubIndicatorKey) =>
+    setEnabledPanes((prev) =>
+      prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key],
     );
 
   const backButton = (
@@ -213,10 +236,35 @@ export const StockQuoteDetailPage = () => {
         </div>
       </div>
 
+      {/* 指标开关：BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量 副图，数据全部来自后端接口 */}
+      <div className="mb-4 flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-xs text-muted-foreground">指标</span>
+        <IndicatorToggle
+          label="BOLL"
+          active={showBoll}
+          onClick={() => setShowBoll((v) => !v)}
+        />
+        {SUB_INDICATORS.map((g) => (
+          <IndicatorToggle
+            key={g.key}
+            label={g.label}
+            active={enabledPanes.includes(g.key)}
+            onClick={() => togglePane(g.key)}
+          />
+        ))}
+      </div>
+
       <Card className="mb-6">
         <CardContent className="pt-6">
           {klines?.length ? (
-            <KlineChart klines={klines} enabledMAs={enabledMAs} />
+            <KlineChart
+              klines={klines}
+              indicators={klineIndicators}
+              enabledMAs={enabledMAs}
+              showBoll={showBoll}
+              enabledPanes={enabledPanes}
+              height={520 + enabledPanes.length * 120}
+            />
           ) : (
             <p className="py-8 text-center text-muted-foreground">
               暂无 K 线数据
@@ -229,7 +277,7 @@ export const StockQuoteDetailPage = () => {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">
-              技术指标（{indicators.trade_date}）
+              技术指标快照（{indicators.trade_date}）
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -251,3 +299,26 @@ export const StockQuoteDetailPage = () => {
     </>
   );
 };
+
+const IndicatorToggle = ({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={cn(
+      "rounded-full border px-2.5 py-1 text-xs transition-colors",
+      active
+        ? "border-transparent bg-muted font-medium"
+        : "text-muted-foreground hover:bg-muted/60",
+    )}
+  >
+    {label}
+  </button>
+);

@@ -3,6 +3,7 @@ import type {
   TIndexQuote,
   TIndicatorResult,
   TKline,
+  TKlineIndicators,
   TStockBrief,
   TStockIntraday,
   TStockQuote,
@@ -43,6 +44,29 @@ export const marketApi = {
           adjust: opts.adjust === "none" ? "" : (opts.adjust ?? "qfq"),
           limit: opts.limit ?? 120,
           market: opts.market ?? "CN",
+        },
+      }),
+    ),
+
+  /** K 线 + 逐 bar 指标（后端快照优先 / 实时补齐，前端不再手算指标） */
+  klineIndicators: (
+    code: string,
+    opts: {
+      period?: EKlinePeriod;
+      adjust?: EKlineAdjust;
+      limit?: number;
+      market?: string;
+      types: string[];
+    },
+  ) =>
+    getData<TKlineIndicators>(
+      httpClient.get(`market/stocks/${code}/kline`, {
+        searchParams: {
+          period: opts.period ?? "day",
+          adjust: opts.adjust === "none" ? "" : (opts.adjust ?? "qfq"),
+          limit: opts.limit ?? 120,
+          market: opts.market ?? "CN",
+          indicators: opts.types.join(","),
         },
       }),
     ),
