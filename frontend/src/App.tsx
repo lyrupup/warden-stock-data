@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastContainer } from "@/components/common/toast-container";
 import { ThemeProvider } from "@/core/theme/theme-provider";
-import { useToast } from "@/hooks/use-toast";
+import { useToastStore } from "@/stores/toast-store";
 import { AppRouter } from "@/routes";
 
 const queryClient = new QueryClient({
@@ -14,7 +14,8 @@ const queryClient = new QueryClient({
 });
 
 export const App = () => {
-  const { toasts, dismiss } = useToast();
+  const toasts = useToastStore((s) => s.toasts);
+  const dismiss = useToastStore((s) => s.dismiss);
 
   return (
     <QueryClientProvider client={queryClient}>
