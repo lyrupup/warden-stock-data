@@ -5,6 +5,7 @@ export {
   BOLL_SERIES,
   SUB_INDICATORS,
   indicatorTypesFor,
+  ALL_INDICATOR_TYPES,
   computeMA,
   type TMAPeriod,
   type TSubIndicatorKey,

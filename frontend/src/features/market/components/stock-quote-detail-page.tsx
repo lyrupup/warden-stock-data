@@ -1,5 +1,5 @@
 import { ArrowLeft, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { IntradayChart } from "@/components/common/intraday-chart";
 import {
@@ -7,7 +7,7 @@ import {
   MA_PERIODS,
   MA_COLOR,
   SUB_INDICATORS,
-  indicatorTypesFor,
+  ALL_INDICATOR_TYPES,
   type TMAPeriod,
   type TSubIndicatorKey,
 } from "@/components/common/kline-chart";
@@ -31,42 +31,71 @@ import {
   useStockIndicators,
   useStockIntraday,
   useStockKline,
-  useStockKlineIndicators,
+  useStockKlineInfinite,
   useStockQuote,
 } from "../hooks/use-market";
 
 const DEFAULT_MAS: TMAPeriod[] = [5, 10, 20, 60];
+/** 单次加载的 K 线根数，左滑到边界时按此步进加载更早历史 */
+const KLINE_PAGE = 120;
+/** 主图叠加二选一：均线 MA 或 布林 BOLL（互斥，避免线过多看不清） */
+type EMainOverlay = "ma" | "boll";
 
 export const StockQuoteDetailPage = () => {
   const navigate = useNavigate();
   const { code = "" } = useParams<{ code: string }>();
   const [period, setPeriod] = useState<EKlinePeriod>("day");
   const [adjust, setAdjust] = useState<EKlineAdjust>("qfq");
+  const [mainOverlay, setMainOverlay] = useState<EMainOverlay>("ma");
   const [enabledMAs, setEnabledMAs] = useState<TMAPeriod[]>(DEFAULT_MAS);
-  const [showBoll, setShowBoll] = useState(false);
   const [enabledPanes, setEnabledPanes] = useState<TSubIndicatorKey[]>(["macd"]);
 
-  // 绘图所需指标类型 → 一次性向后端请求（前端不再手算）
-  const indicatorTypes = indicatorTypesFor(enabledMAs, {
-    boll: showBoll,
-    panes: enabledPanes,
-  });
+  const showBoll = mainOverlay === "boll";
 
   const {
     data: quote,
     isLoading,
     isError,
   } = useStockQuote(code || null);
-  const { data: klineData } = useStockKlineIndicators(
+  // 固定请求全量指标：切换 MA/BOLL/副图开关时 queryKey 不变、不重拉、不闪烁。
+  // 左滑分页加载更多：各页「最近→更早」，倒序拼接为升序整体序列供绘图。
+  const {
+    data: klinePages,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useStockKlineInfinite(
     code || null,
     period,
     adjust,
-    indicatorTypes,
+    ALL_INDICATOR_TYPES,
+    KLINE_PAGE,
   );
-  const klines = klineData?.bars;
-  const klineIndicators = klineData?.indicators;
-  // 做 T 历史基准固定用日线前复权，独立于上方 K 线周期选择
-  const { data: dayKlines } = useStockKline(code || null, "day", "qfq");
+  const orderedPages = useMemo(
+    () => (klinePages?.pages ?? []).slice().reverse(),
+    [klinePages],
+  );
+  const klines = useMemo(
+    () => orderedPages.flatMap((p) => p.bars ?? []),
+    [orderedPages],
+  );
+  const klineIndicators = useMemo(
+    () => orderedPages.flatMap((p) => p.indicators ?? []),
+    [orderedPages],
+  );
+  const hasMore = hasNextPage;
+  const loadMore = () => {
+    if (hasNextPage && !isFetchingNextPage) fetchNextPage();
+  };
+  // 做 T 历史基准固定用日线前复权；当前 K 线已是 day+qfq 时复用 infinite 的 bars，避免重复拉同一接口
+  const reuseKlineForDaytrade = period === "day" && adjust === "qfq";
+  const { data: dayKlinesExtra } = useStockKline(
+    code || null,
+    "day",
+    "qfq",
+    !reuseKlineForDaytrade,
+  );
+  const dayKlines = reuseKlineForDaytrade ? klines : dayKlinesExtra;
   const { data: intraday } = useStockIntraday(code || null);
   const { data: indicators } = useStockIndicators(code || null);
 
@@ -207,43 +236,55 @@ export const StockQuoteDetailPage = () => {
             <SelectItem value="none">不复权</SelectItem>
           </SelectContent>
         </Select>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {MA_PERIODS.map((p) => {
-            const active = enabledMAs.includes(p);
-            return (
-              <button
-                key={p}
-                type="button"
-                onClick={() => toggleMA(p)}
-                className={cn(
-                  "flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
-                  active
-                    ? "border-transparent bg-muted font-medium"
-                    : "text-muted-foreground hover:bg-muted/60",
-                )}
-              >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{
-                    backgroundColor: active ? MA_COLOR[p] : "transparent",
-                    border: active ? undefined : `1px solid ${MA_COLOR[p]}`,
-                  }}
-                />
-                MA{p}
-              </button>
-            );
-          })}
+        {/* 主图叠加二选一：均线 MA / 布林 BOLL（互斥，避免主图线过多） */}
+        <div className="flex items-center gap-1.5">
+          <span className="mr-1 text-xs text-muted-foreground">主图</span>
+          <Tabs
+            value={mainOverlay}
+            onValueChange={(v) => setMainOverlay(v as EMainOverlay)}
+          >
+            <TabsList>
+              <TabsTrigger value="ma">均线</TabsTrigger>
+              <TabsTrigger value="boll">BOLL</TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
+
+        {/* 均线模式下选择周期（多选，仍属「均线」一种叠加） */}
+        {mainOverlay === "ma" ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {MA_PERIODS.map((p) => {
+              const active = enabledMAs.includes(p);
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => toggleMA(p)}
+                  className={cn(
+                    "flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    active
+                      ? "border-transparent bg-muted font-medium"
+                      : "text-muted-foreground hover:bg-muted/60",
+                  )}
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{
+                      backgroundColor: active ? MA_COLOR[p] : "transparent",
+                      border: active ? undefined : `1px solid ${MA_COLOR[p]}`,
+                    }}
+                  />
+                  MA{p}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
 
-      {/* 指标开关：BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量 副图，数据全部来自后端接口 */}
+      {/* 副图开关：MACD/KDJ/RSI/ATR/动量，每组独立窗格，数据全部来自后端接口 */}
       <div className="mb-4 flex flex-wrap items-center gap-1.5">
-        <span className="mr-1 text-xs text-muted-foreground">指标</span>
-        <IndicatorToggle
-          label="BOLL"
-          active={showBoll}
-          onClick={() => setShowBoll((v) => !v)}
-        />
+        <span className="mr-1 text-xs text-muted-foreground">副图</span>
         {SUB_INDICATORS.map((g) => (
           <IndicatorToggle
             key={g.key}
@@ -260,10 +301,13 @@ export const StockQuoteDetailPage = () => {
             <KlineChart
               klines={klines}
               indicators={klineIndicators}
-              enabledMAs={enabledMAs}
+              enabledMAs={mainOverlay === "ma" ? enabledMAs : []}
               showBoll={showBoll}
               enabledPanes={enabledPanes}
               height={520 + enabledPanes.length * 120}
+              hasMore={hasMore}
+              isLoadingMore={isFetchingNextPage}
+              onLoadMore={loadMore}
             />
           ) : (
             <p className="py-8 text-center text-muted-foreground">

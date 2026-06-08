@@ -48,13 +48,15 @@ export const marketApi = {
       }),
     ),
 
-  /** K 线 + 逐 bar 指标（后端快照优先 / 实时补齐，前端不再手算指标） */
+  /** K 线 + 逐 bar 指标（后端快照优先 / 实时补齐，前端不再手算指标）。
+   * offset 配合 limit 做分页：跳过最近 offset 根、取 limit 根历史，响应含 has_more。 */
   klineIndicators: (
     code: string,
     opts: {
       period?: EKlinePeriod;
       adjust?: EKlineAdjust;
       limit?: number;
+      offset?: number;
       market?: string;
       types: string[];
     },
@@ -65,6 +67,7 @@ export const marketApi = {
           period: opts.period ?? "day",
           adjust: opts.adjust === "none" ? "" : (opts.adjust ?? "qfq"),
           limit: opts.limit ?? 120,
+          offset: opts.offset ?? 0,
           market: opts.market ?? "CN",
           indicators: opts.types.join(","),
         },

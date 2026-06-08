@@ -75,6 +75,8 @@ export type TIndicatorResult = {
 export type TKlineIndicators = {
   bars: TKline[];
   indicators: TIndicatorResult[];
+  /** 当前窗口左侧（更早方向）是否还有可分页加载的历史 K 线 */
+  has_more: boolean;
 };
 
 export type EKlinePeriod = "day" | "week" | "month";
