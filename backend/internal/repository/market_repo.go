@@ -131,9 +131,14 @@ func (r *IndicatorRepository) UpsertSnapshot(ctx context.Context, market, code s
 		Market: market, StockCode: code, TradeDate: tradeDate,
 		Values: datatypes.JSON(b), UpdatedAt: time.Now(),
 	}
+	// 冲突时按 JSONB 合并（已有 || 新值，同键以新值为准）而非整行覆盖：
+	// 这样用更小的 types 子集再次扫描不会抹掉该日已落库的其它指标，新增指标也能增量补字段。
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
-		DoUpdates: clause.AssignmentColumns([]string{"values", "updated_at"}),
+		Columns: []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"values":     gorm.Expr(`COALESCE(stock_indicator_snapshots."values", '{}'::jsonb) || excluded."values"`),
+			"updated_at": time.Now(),
+		}),
 	}).Create(&snap).Error
 }
 
