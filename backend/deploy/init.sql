@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS stock_quotes (
 CREATE TABLE IF NOT EXISTS update_jobs (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(64) NOT NULL,
-    job_type VARCHAR(16) NOT NULL,
+    job_type VARCHAR(32) NOT NULL,
     market VARCHAR(8) NOT NULL DEFAULT 'CN',
     cron_expr VARCHAR(64) NOT NULL DEFAULT '0 0 17 * * *',
     batch_size INT NOT NULL DEFAULT 20,
@@ -105,13 +105,16 @@ CREATE TABLE IF NOT EXISTS update_jobs (
 CREATE TABLE IF NOT EXISTS update_job_runs (
     id BIGSERIAL PRIMARY KEY,
     job_id BIGINT NOT NULL,
-    job_type VARCHAR(16) NOT NULL DEFAULT '',
+    job_type VARCHAR(32) NOT NULL DEFAULT '',
     market VARCHAR(8) NOT NULL DEFAULT 'CN',
     status VARCHAR(16) NOT NULL DEFAULT 'running',
     total INT NOT NULL DEFAULT 0,
     processed INT NOT NULL DEFAULT 0,
     succeeded INT NOT NULL DEFAULT 0,
     failed INT NOT NULL DEFAULT 0,
+    skipped INT NOT NULL DEFAULT 0,
+    failed_codes TEXT NOT NULL DEFAULT '',
+    skipped_codes TEXT NOT NULL DEFAULT '',
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at TIMESTAMPTZ,
     error_msg TEXT NOT NULL DEFAULT ''

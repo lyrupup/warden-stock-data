@@ -4,31 +4,48 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
 	"github.com/warden-stock/warden-stock-data/internal/model"
 	"github.com/warden-stock/warden-stock-data/internal/service"
 )
 
-func TestFilterAfterWatermark(t *testing.T) {
+func TestUntradedFromQuotes(t *testing.T) {
+	// 无任何快照行 → 无行情。
+	require.True(t, service.UntradedFromQuotesForTest(nil))
+	require.True(t, service.UntradedFromQuotesForTest([]model.StockQuote{}))
+	// 有快照行但现价为 0（量价全 0 的未上市/停牌）→ 无行情。
+	require.True(t, service.UntradedFromQuotesForTest([]model.StockQuote{
+		{StockCode: "688797", Price: decimal.Zero},
+	}))
+	// 有有效现价 → 正常交易。
+	require.False(t, service.UntradedFromQuotesForTest([]model.StockQuote{
+		{StockCode: "600519", Price: decimal.NewFromFloat(1262.98)},
+	}))
+}
+
+func TestFilterFromWatermarkInclusive(t *testing.T) {
 	wm := time.Date(2024, 1, 5, 0, 0, 0, 0, time.UTC)
+	bars := []model.StockDailyKline{
+		{TradeDate: time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC)}, // 早于水位 → 过滤
+		{TradeDate: time.Date(2024, 1, 5, 0, 0, 0, 0, time.UTC)}, // 等于水位 → 保留（覆盖最新一日）
+		{TradeDate: time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC)}, // 晚于水位 → 保留
+	}
+	out := service.FilterFromWatermarkForTest(bars, &wm)
+	require.Len(t, out, 2)
+	require.Equal(t, 5, out[0].TradeDate.Day())
+	require.Equal(t, 6, out[1].TradeDate.Day())
+}
+
+func TestFilterFromWatermarkNil(t *testing.T) {
+	// 水位为 nil（新股 / 库空）时返回全部 K 线。
 	bars := []model.StockDailyKline{
 		{TradeDate: time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC)},
 		{TradeDate: time.Date(2024, 1, 6, 0, 0, 0, 0, time.UTC)},
 	}
-	out := filterBars(bars, &wm)
-	require.Len(t, out, 1)
-	require.Equal(t, 6, out[0].TradeDate.Day())
-}
-
-func filterBars(bars []model.StockDailyKline, wm *time.Time) []model.StockDailyKline {
-	out := make([]model.StockDailyKline, 0)
-	for _, b := range bars {
-		if wm == nil || b.TradeDate.After(*wm) {
-			out = append(out, b)
-		}
-	}
-	return out
+	out := service.FilterFromWatermarkForTest(bars, nil)
+	require.Len(t, out, 2)
 }
 
 func TestFilterPendingCodes(t *testing.T) {

@@ -65,6 +65,9 @@ func main() {
 		slog.Error("seed admin", "err", err)
 		os.Exit(1)
 	}
+	if err := jobRepo.EnsureSchema(context.Background()); err != nil {
+		slog.Warn("ensure job schema failed", "err", err)
+	}
 	_ = jobRepo.EnsureDefaults(context.Background())
 	_ = jobRepo.EnsureDefaultDataSource(context.Background(), cfg.MarketProvider)
 	if n, err := jobRepo.MarkStaleRunningAsFailed(context.Background()); err == nil && n > 0 {

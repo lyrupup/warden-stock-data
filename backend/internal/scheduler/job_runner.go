@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -128,7 +129,7 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 	}()
 
 	// securities：轻量作业，仅同步证券列表（发现新股 / 改名），不逐只拉 K 线。
-	if opts.JobType == "securities" {
+	if opts.JobType == JobSecurities {
 		r.runSecuritiesSync(ctx, run)
 		return
 	}
@@ -143,7 +144,7 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 	}
 	// 增量类型且非用户指定代码时，仅保留落后于全市场最新交易日的标的，
 	// 避免对已是最新的股票重复请求数据源（全量 / 指标类型不在此过滤）。
-	if !explicitCodes && (opts.JobType == "" || opts.JobType == "incremental") {
+	if !explicitCodes && (opts.JobType == "" || opts.JobType == JobKlineIncremental) {
 		if pending, err := r.updateSvc.PendingCodes(ctx, codes); err == nil {
 			slog.Info("incremental pending filter", "all", len(codes), "pending", len(pending))
 			codes = pending
@@ -164,13 +165,16 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 		concurrency = 10
 	}
 
-	var processed, succeeded, failed atomic.Int32
+	var processed, succeeded, failed, skipped atomic.Int32
+	var codesMu sync.Mutex
+	failedCodes := make([]string, 0)
+	skippedCodes := make([]string, 0)
 	sem := make(chan struct{}, concurrency)
 
 	for i := 0; i < len(codes); i += batchSize {
 		select {
 		case <-ctx.Done():
-			r.finishRun(ctx, run, "canceled", &processed, &succeeded, &failed)
+			r.finishRun(ctx, run, "canceled", &processed, &succeeded, &failed, &skipped, &codesMu, failedCodes, skippedCodes)
 			return
 		default:
 		}
@@ -186,65 +190,84 @@ func (r *JobRunner) Run(ctx context.Context, job *model.UpdateJob, run *model.Up
 			go func(code string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if err := r.runOne(ctx, opts.JobType, code, marketLatest); err != nil {
-					failed.Add(1)
-					slog.Warn("job item failed", "code", code, "err", err)
-				} else {
+				switch err := r.runOne(ctx, opts.JobType, code, marketLatest); {
+				case err == nil:
 					succeeded.Add(1)
+				case errors.Is(err, service.ErrNoMarketData):
+					// 无行情/未上市：正常状态，计入跳过而非失败，单列代码便于运维识别。
+					skipped.Add(1)
+					codesMu.Lock()
+					skippedCodes = append(skippedCodes, code)
+					codesMu.Unlock()
+					slog.Info("job item skipped (no market data)", "code", code, "err", err)
+				default:
+					failed.Add(1)
+					codesMu.Lock()
+					failedCodes = append(failedCodes, code)
+					codesMu.Unlock()
+					slog.Warn("job item failed", "code", code, "err", err)
 				}
 				processed.Add(1)
 				run.Processed = int(processed.Load())
 				run.Succeeded = int(succeeded.Load())
 				run.Failed = int(failed.Load())
+				run.Skipped = int(skipped.Load())
 				_ = r.jobRepo.SaveRun(ctx, run)
 			}(code)
 		}
 		wg.Wait()
 		time.Sleep(100 * time.Millisecond)
 	}
-	r.finishRun(ctx, run, "done", &processed, &succeeded, &failed)
+	r.finishRun(ctx, run, "done", &processed, &succeeded, &failed, &skipped, &codesMu, failedCodes, skippedCodes)
 }
 
 // runSecuritiesSync 执行「仅同步证券列表」作业：调用一次 SyncSecuritiesList，
 // 以同步到的证券数量作为 total/succeeded，几秒内完成，不触达 K 线接口。
 func (r *JobRunner) runSecuritiesSync(ctx context.Context, run *model.UpdateJobRun) {
-	var processed, succeeded, failed atomic.Int32
+	var processed, succeeded, failed, skipped atomic.Int32
 	codes, err := r.updateSvc.SyncSecuritiesList(ctx)
 	if err != nil {
 		run.ErrorMsg = err.Error()
-		r.finishRun(ctx, run, "failed", &processed, &succeeded, &failed)
+		r.finishRun(ctx, run, "failed", &processed, &succeeded, &failed, &skipped, nil, nil, nil)
 		return
 	}
 	n := int32(len(codes))
 	run.Total = len(codes)
 	processed.Store(n)
 	succeeded.Store(n)
-	r.finishRun(ctx, run, "done", &processed, &succeeded, &failed)
+	r.finishRun(ctx, run, "done", &processed, &succeeded, &failed, &skipped, nil, nil, nil)
 }
 
+// runOne 按作业类型分发单只标的的处理逻辑。五类作业职责单一：K 线拉取与指标计算解耦。
+// 旧类型 indicator/snapshot 兼容映射到「增量指标」，避免历史作业/记录失效。
 func (r *JobRunner) runOne(ctx context.Context, jobType, code string, marketLatest *time.Time) error {
 	switch jobType {
-	case "indicator", "snapshot":
-		return r.updateSvc.ScanIndicators(ctx, code, nil)
-	case "full":
-		if err := r.updateSvc.IncrementalOne(ctx, code, marketLatest); err != nil {
-			return err
-		}
+	case JobKlineFull:
+		return r.updateSvc.SyncKlineFull(ctx, code)
+	case JobIndicatorFull:
 		return r.updateSvc.BackfillIndicators(ctx, code, nil)
-	default:
-		if err := r.updateSvc.IncrementalOne(ctx, code, marketLatest); err != nil {
-			return err
-		}
+	case JobIndicatorIncremental, "indicator", "snapshot":
 		return r.updateSvc.ScanIndicators(ctx, code, nil)
+	case JobKlineIncremental, "":
+		return r.updateSvc.IncrementalOne(ctx, code, marketLatest)
+	default:
+		return r.updateSvc.IncrementalOne(ctx, code, marketLatest)
 	}
 }
 
-func (r *JobRunner) finishRun(_ context.Context, run *model.UpdateJobRun, status string, processed, succeeded, failed *atomic.Int32) {
+func (r *JobRunner) finishRun(_ context.Context, run *model.UpdateJobRun, status string, processed, succeeded, failed, skipped *atomic.Int32, codesMu *sync.Mutex, failedCodes, skippedCodes []string) {
 	now := time.Now()
 	run.Status = status
 	run.Processed = int(processed.Load())
 	run.Succeeded = int(succeeded.Load())
 	run.Failed = int(failed.Load())
+	run.Skipped = int(skipped.Load())
+	if codesMu != nil {
+		codesMu.Lock()
+		run.FailedCodes = formatFailedCodes(failedCodes)
+		run.SkippedCodes = formatFailedCodes(skippedCodes)
+		codesMu.Unlock()
+	}
 	run.FinishedAt = &now
 	// 终态保存使用独立 context：取消路径传入的 ctx 已 Done，会导致保存失败。
 	_ = r.jobRepo.SaveRun(context.Background(), run)

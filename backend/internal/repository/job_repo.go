@@ -135,17 +135,54 @@ func (r *JobRepository) LatestRunAt(ctx context.Context) (*time.Time, error) {
 	return &run.StartedAt, nil
 }
 
+// EnsureSchema 幂等校正作业相关表结构（存量库 init.sql 仅首次初始化执行，AutoMigrate 对
+// varchar 扩宽并不总是生效）：把 job_type 扩宽到 32 以容纳 indicator_incremental 等较长类型，
+// 并补齐 update_job_runs.failed_codes 列。
+func (r *JobRepository) EnsureSchema(ctx context.Context) error {
+	stmts := []string{
+		"ALTER TABLE update_jobs ALTER COLUMN job_type TYPE varchar(32)",
+		"ALTER TABLE update_job_runs ALTER COLUMN job_type TYPE varchar(32)",
+		"ALTER TABLE update_job_runs ADD COLUMN IF NOT EXISTS failed_codes TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE update_job_runs ADD COLUMN IF NOT EXISTS skipped INT NOT NULL DEFAULT 0",
+		"ALTER TABLE update_job_runs ADD COLUMN IF NOT EXISTS skipped_codes TEXT NOT NULL DEFAULT ''",
+	}
+	for _, s := range stmts {
+		if err := r.db.WithContext(ctx).Exec(s).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *JobRepository) EnsureDefaults(ctx context.Context) error {
-	// 按 (job_type, market) 幂等补建：存量库也会自动补上后加入的默认作业（如 securities）。
+	// 按 (job_type, market) 幂等补建：存量库也会自动补上后加入的默认作业。
+	// 作业细分为五类，K 线拉取与指标计算解耦，盘后链路：增量日K(17:00) → 增量指标(17:30)；
+	// 全量回补类（日K / 指标）开销大，默认停用，按需手动触发或单独排程。
 	defaults := []model.UpdateJob{
-		{
-			Name: "daily-incremental", JobType: "incremental", Market: "CN",
-			CronExpr: "0 0 17 * * *", BatchSize: 20, Concurrency: 10, Enabled: true,
-		},
 		{
 			// 证券列表同步：盘前 8:30 发现新股 / 更新名称，轻量，分批/并发参数对其无意义。
 			Name: "securities-sync", JobType: "securities", Market: "CN",
 			CronExpr: "0 30 8 * * *", BatchSize: 1, Concurrency: 1, Enabled: true,
+		},
+		{
+			// 增量日K数据回补：盘后 17:00 补齐并覆盖最新一日日 K。
+			Name: "daily-incremental", JobType: "incremental", Market: "CN",
+			CronExpr: "0 0 17 * * *", BatchSize: 20, Concurrency: 10, Enabled: true,
+		},
+		{
+			// 增量日K技术数据回补：盘后 17:30（增量日K之后）计算最新一日指标快照。
+			Name: "daily-indicator-incremental", JobType: "indicator_incremental", Market: "CN",
+			CronExpr: "0 30 17 * * *", BatchSize: 20, Concurrency: 10, Enabled: true,
+		},
+		{
+			// 全量日K数据回补：整体覆盖回补历史日 K，开销大，默认停用，按需手动触发。
+			Name: "kline-full-backfill", JobType: "full", Market: "CN",
+			CronExpr: "0 0 4 * * 6", BatchSize: 20, Concurrency: 10, Enabled: false,
+		},
+		{
+			// 全量日K技术数据回补：逐日重算全部历史指标快照，开销大，默认停用，按需手动触发。
+			Name: "indicator-full-backfill", JobType: "indicator_full", Market: "CN",
+			CronExpr: "0 0 6 * * 6", BatchSize: 20, Concurrency: 10, Enabled: false,
 		},
 	}
 	for i := range defaults {
@@ -158,7 +195,11 @@ func (r *JobRepository) EnsureDefaults(ctx context.Context) error {
 		if count > 0 {
 			continue
 		}
-		if err := r.db.WithContext(ctx).Create(&defaults[i]).Error; err != nil {
+		// 显式 Select Enabled：否则 GORM 对带 default 标签的零值布尔（Enabled=false）会忽略该列，
+		// 落库时被数据库默认值 TRUE 覆盖，导致「默认停用」的全量回补作业被错误启用。
+		if err := r.db.WithContext(ctx).
+			Select("Name", "JobType", "Market", "CronExpr", "BatchSize", "Concurrency", "Enabled").
+			Create(&defaults[i]).Error; err != nil {
 			return err
 		}
 	}

@@ -153,7 +153,7 @@ func (StockIndicatorSnapshot) TableName() string { return "stock_indicator_snaps
 type UpdateJob struct {
 	ID          uint      `gorm:"primarykey" json:"id"`
 	Name        string    `gorm:"size:64;not null" json:"name"`
-	JobType     string    `gorm:"size:16;not null" json:"job_type"`
+	JobType     string    `gorm:"size:32;not null" json:"job_type"`
 	Market      string    `gorm:"size:8;not null;default:CN" json:"market"`
 	CronExpr    string    `gorm:"size:64;not null;default:'0 0 17 * * *'" json:"cron_expr"`
 	BatchSize   int       `gorm:"not null;default:20" json:"batch_size"`
@@ -168,16 +168,25 @@ func (UpdateJob) TableName() string { return "update_jobs" }
 type UpdateJobRun struct {
 	ID         uint       `gorm:"primarykey" json:"id"`
 	JobID      uint       `gorm:"not null;index:idx_job_runs_job" json:"job_id"`
-	JobType    string     `gorm:"size:16;not null;default:''" json:"job_type"`
+	JobType    string     `gorm:"size:32;not null;default:''" json:"job_type"`
 	Market     string     `gorm:"size:8;not null;default:CN" json:"market"`
 	Status     string     `gorm:"size:16;not null;default:running" json:"status"`
 	Total      int        `gorm:"not null;default:0" json:"total"`
 	Processed  int        `gorm:"not null;default:0" json:"processed"`
 	Succeeded  int        `gorm:"not null;default:0" json:"succeeded"`
 	Failed     int        `gorm:"not null;default:0" json:"failed"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	ErrorMsg   string     `gorm:"type:text;not null;default:''" json:"error_msg"`
+	// Skipped 记录本次「无行情/未上市」而跳过的标的数量（数据源既无日 K 又无有效快照，
+	// 属正常状态，不计入失败）。
+	Skipped     int        `gorm:"not null;default:0" json:"skipped"`
+	// FailedCodes 记录本次未成功/未完整处理的标的代码（逗号分隔，超量截断并附计数），
+	// 便于运维针对个别股票单独重跑补数。
+	FailedCodes string     `gorm:"type:text;not null;default:''" json:"failed_codes"`
+	// SkippedCodes 记录本次因「无行情/未上市」被跳过的标的代码（逗号分隔，超量截断并附计数），
+	// 便于运维识别这类正常无数据的标的，与真正失败的代码区分开。
+	SkippedCodes string    `gorm:"type:text;not null;default:''" json:"skipped_codes"`
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	ErrorMsg    string     `gorm:"type:text;not null;default:''" json:"error_msg"`
 }
 
 func (UpdateJobRun) TableName() string { return "update_job_runs" }
