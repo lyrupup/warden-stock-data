@@ -226,7 +226,16 @@ export const IntradayChart = ({
         horzLines: { color: "rgba(128,128,128,0.2)" },
       },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      // 单日分时是完整一段：固定左右边界，缩放/平移都钳制在数据范围内，
+      // 不会把数据范围之外的空白拉进绘图区（放大后仍可在范围内左右拖动查看）。
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: false,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+      },
       localization: { timeFormatter: formatHourMinute },
     });
 
