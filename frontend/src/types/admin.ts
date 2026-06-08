@@ -44,10 +44,20 @@ export type TDataSource = {
   health: "ok" | "degraded" | "down" | "unknown";
 };
 
+export type TJobType =
+  | "securities"
+  | "full"
+  | "incremental"
+  | "indicator_full"
+  | "indicator_incremental"
+  // 历史兼容类型（旧记录可能出现），新建作业不再使用。
+  | "snapshot"
+  | "indicator";
+
 export type TUpdateJob = {
   id: number;
   name: string;
-  job_type: "full" | "incremental" | "snapshot" | "indicator" | "securities";
+  job_type: TJobType;
   market: string;
   cron_expr: string;
   batch_size: number;
@@ -65,6 +75,9 @@ export type TJobRun = {
   processed: number;
   succeeded: number;
   failed: number;
+  skipped?: number;
+  failed_codes?: string;
+  skipped_codes?: string;
   started_at: string;
   finished_at: string | null;
   error_msg?: string;

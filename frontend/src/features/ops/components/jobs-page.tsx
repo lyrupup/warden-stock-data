@@ -1,4 +1,4 @@
-import { Pencil, Play } from "lucide-react";
+import { Info, Pencil, Play } from "lucide-react";
 import { useState } from "react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -24,6 +24,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePagedQuery } from "@/hooks/use-paged-query";
 import { AppError } from "@/core/http-client";
 import { formatDateTime } from "@/lib/format";
@@ -34,13 +40,19 @@ import {
   useJobRunPolling,
   useJobRuns,
   useJobs,
-  useRunJob,
   useUpdateJob,
 } from "../hooks/use-ops";
 import {
   formatJobRunProgress,
   jobRunProgressTitle,
 } from "../lib/format-job-run-progress";
+import {
+  FailedCodesDialog,
+  JobRunDialog,
+  parseRunCodes,
+  SkippedCodesDialog,
+  type TRunDialogJob,
+} from "./job-run-dialog";
 
 const STATUS_LABEL: Record<TJobRun["status"], string> = {
   waiting: "等待中",
@@ -51,14 +63,33 @@ const STATUS_LABEL: Record<TJobRun["status"], string> = {
 };
 
 const JOB_TYPE_LABEL: Record<string, string> = {
-  full: "全量回补",
-  incremental: "增量更新",
-  snapshot: "指标快照",
-  indicator: "指标计算",
   securities: "证券列表同步",
+  full: "全量日K数据回补",
+  incremental: "增量日K数据回补",
+  indicator_full: "全量日K技术数据回补",
+  indicator_incremental: "增量日K技术数据回补",
+  // 历史兼容类型
+  snapshot: "指标快照（旧）",
+  indicator: "指标计算（旧）",
 };
 
 const jobTypeLabel = (t: string) => JOB_TYPE_LABEL[t] ?? t;
+
+// 各 job_type 的实际行为说明（与后端 job_runner.runOne 分发一致），便于运维理解五类作业职责。
+const JOB_TYPE_HINT: Record<string, string> = {
+  securities: "把 gotdx 证券列表（代码 / 名称 / 板块）同步入库；不拉 K 线、不计算指标。",
+  full: "按证券列表整体覆盖回补全部历史日 K 数据，已有日期的日 K 也一并覆盖更新；不计算指标。",
+  incremental:
+    "按证券列表补齐并覆盖最新一日日 K 数据，已有最新一日数据也覆盖更新；不计算指标。",
+  indicator_full:
+    "基于已入库的全量日 K，逐日重算系统支持的全部技术指标快照，全量覆盖更新。",
+  indicator_incremental:
+    "基于已入库的日 K，计算最新一日 K 线的各项技术指标快照，覆盖更新。",
+  snapshot: "（历史兼容）等价于增量日K技术数据回补：仅算最新一日指标。",
+  indicator: "（历史兼容）等价于增量日K技术数据回补：仅算最新一日指标。",
+};
+
+const jobTypeHint = (t: string) => JOB_TYPE_HINT[t];
 
 const statusVariant = (status: TJobRun["status"]) => {
   switch (status) {
@@ -73,25 +104,38 @@ const statusVariant = (status: TJobRun["status"]) => {
   }
 };
 
+type TTriggerState = {
+  job: TRunDialogJob;
+  scope: "all" | "codes";
+  codes: string[];
+};
+
 export const JobsPage = () => {
   const { data: jobs } = useJobs();
   const { page, size, setPage } = usePagedQuery();
   const { data: runs } = useJobRuns(page, size);
   const { data: freshness } = useFreshness();
   const securitiesCount = freshness?.securities_count;
-  const runJob = useRunJob();
   const cancelRun = useCancelJobRun();
   const [pollingRunId, setPollingRunId] = useState<number | null>(null);
   const { data: pollingRun } = useJobRunPolling(pollingRunId);
   const [editJob, setEditJob] = useState<TUpdateJob | null>(null);
+  const [trigger, setTrigger] = useState<TTriggerState | null>(null);
+  const [failedRun, setFailedRun] = useState<TJobRun | null>(null);
+  const [skippedRun, setSkippedRun] = useState<TJobRun | null>(null);
 
-  const handleRun = async (job: TUpdateJob) => {
-    const result = await runJob.mutateAsync({
-      id: job.id,
-      type: job.job_type,
-      market: job.market,
-    });
-    setPollingRunId(result.runId);
+  // 由一条执行记录发起「重跑失败代码」：优先用现存作业，找不到则用记录中的 job_id/job_type 兜底。
+  const rerunFailed = (run: TJobRun, codes: string[]) => {
+    const job = jobs?.find((j) => j.id === run.job_id);
+    const target: TRunDialogJob = job
+      ? { id: job.id, name: job.name, job_type: job.job_type }
+      : {
+          id: run.job_id,
+          name: `Job ${run.job_id}`,
+          job_type: run.job_type as TUpdateJob["job_type"],
+        };
+    setFailedRun(null);
+    setTrigger({ job: target, scope: "codes", codes });
   };
 
   const progress =
@@ -112,7 +156,25 @@ export const JobsPage = () => {
         {jobs?.map((job) => (
           <Card key={job.id}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-base">{job.name}</CardTitle>
+              <div className="flex items-center gap-1.5">
+                <CardTitle className="text-base">{job.name}</CardTitle>
+                {jobTypeHint(job.job_type) ? (
+                  <TooltipProvider delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="作业行为说明"
+                          className="text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:text-foreground"
+                        >
+                          <Info className="h-4 w-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>{jobTypeHint(job.job_type)}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : null}
+              </div>
               <Badge variant={job.enabled ? "success" : "secondary"}>
                 {job.enabled ? "启用" : "停用"}
               </Badge>
@@ -133,9 +195,19 @@ export const JobsPage = () => {
               <div className="mt-2 flex gap-2">
                 <Button
                   size="sm"
-                  disabled={!job.enabled || runJob.isPending}
+                  disabled={!job.enabled}
                   title={job.enabled ? undefined : "作业已停用，无法手动触发"}
-                  onClick={() => void handleRun(job)}
+                  onClick={() =>
+                    setTrigger({
+                      job: {
+                        id: job.id,
+                        name: job.name,
+                        job_type: job.job_type,
+                      },
+                      scope: "all",
+                      codes: [],
+                    })
+                  }
                 >
                   <Play className="mr-1 h-3 w-3" />
                   手动触发
@@ -156,6 +228,24 @@ export const JobsPage = () => {
 
       <JobEditDialog job={editJob} onClose={() => setEditJob(null)} />
 
+      <JobRunDialog
+        job={trigger?.job ?? null}
+        initialScope={trigger?.scope ?? "all"}
+        initialCodes={trigger?.codes ?? []}
+        onClose={() => setTrigger(null)}
+        onSubmitted={(runId) => setPollingRunId(runId)}
+      />
+
+      <FailedCodesDialog
+        run={failedRun}
+        onClose={() => setFailedRun(null)}
+        onRerun={rerunFailed}
+      />
+      <SkippedCodesDialog
+        run={skippedRun}
+        onClose={() => setSkippedRun(null)}
+      />
+
       {pollingRun?.status === "running" ? (
         <Card className="mb-6">
           <CardHeader>
@@ -172,6 +262,9 @@ export const JobsPage = () => {
                 {formatJobRunProgress(pollingRun, securitiesCount)}（成功{" "}
                 {pollingRun.succeeded.toLocaleString()}，失败{" "}
                 {pollingRun.failed.toLocaleString()}
+                {(pollingRun.skipped ?? 0) > 0
+                  ? `，无行情 ${pollingRun.skipped!.toLocaleString()}`
+                  : ""}
                 {pollingRun.job_type === "incremental" && pollingRun.total > 0
                   ? `，待更新 ${pollingRun.total.toLocaleString()}`
                   : ""}
@@ -203,6 +296,45 @@ export const JobsPage = () => {
             >
               取消
             </Button>
+          </CardContent>
+        </Card>
+      ) : pollingRun &&
+        (pollingRun.status === "done" || pollingRun.status === "failed") ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="text-base">
+              作业完成 Run #{pollingRun.id}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+            <span>
+              {STATUS_LABEL[pollingRun.status]}：成功{" "}
+              {pollingRun.succeeded.toLocaleString()}，失败{" "}
+              {pollingRun.failed.toLocaleString()}
+              {(pollingRun.skipped ?? 0) > 0
+                ? `，无行情 ${pollingRun.skipped!.toLocaleString()}`
+                : ""}
+            </span>
+            {parseRunCodes(pollingRun.failed_codes).length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFailedRun(pollingRun)}
+              >
+                查看未成功代码（
+                {parseRunCodes(pollingRun.failed_codes).length}）
+              </Button>
+            ) : null}
+            {parseRunCodes(pollingRun.skipped_codes).length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSkippedRun(pollingRun)}
+              >
+                查看无行情代码（
+                {parseRunCodes(pollingRun.skipped_codes).length}）
+              </Button>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
@@ -245,7 +377,27 @@ export const JobsPage = () => {
                         className="tabular-nums"
                         title={jobRunProgressTitle(run, securitiesCount)}
                       >
-                        {formatJobRunProgress(run, securitiesCount)}
+                        <div className="flex flex-col gap-0.5">
+                          <span>{formatJobRunProgress(run, securitiesCount)}</span>
+                          {parseRunCodes(run.failed_codes).length > 0 ? (
+                            <button
+                              type="button"
+                              className="text-left text-xs text-red-600 hover:underline"
+                              onClick={() => setFailedRun(run)}
+                            >
+                              未成功 {parseRunCodes(run.failed_codes).length} 个
+                            </button>
+                          ) : null}
+                          {parseRunCodes(run.skipped_codes).length > 0 ? (
+                            <button
+                              type="button"
+                              className="text-left text-xs text-amber-600 hover:underline"
+                              onClick={() => setSkippedRun(run)}
+                            >
+                              无行情 {parseRunCodes(run.skipped_codes).length} 个
+                            </button>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>{formatDateTime(run.started_at)}</TableCell>
                       <TableCell className="text-right">

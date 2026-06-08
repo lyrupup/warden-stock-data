@@ -59,11 +59,13 @@ export const useRunJob = () => {
       id,
       type,
       market,
+      codes,
     }: {
       id: number;
       type?: string;
       market?: string;
-    }) => opsApi.runJob(id, { type, market }),
+      codes?: string[];
+    }) => opsApi.runJob(id, { type, market, codes }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: opsKeys.all }),
   });
 };
