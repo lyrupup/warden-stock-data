@@ -25,6 +25,16 @@ func snapshotTypeSet() map[string]bool {
 	return set
 }
 
+// InDefaultSnapshot 判断某指标类型是否在默认逐日快照集合中（决定能否走快照读取）。
+func InDefaultSnapshot(typ string) bool {
+	for _, t := range DefaultSnapshotTypes {
+		if t == typ {
+			return true
+		}
+	}
+	return false
+}
+
 // catalogMeta 为指标的静态展示元数据，作为「指标定义 ↔ 计算引擎 ↔ 前端/接入方」的单一事实源。
 type catalogMeta struct {
 	name      string
@@ -37,11 +47,12 @@ type catalogMeta struct {
 // metaTable 描述各指标的元数据。implemented / snapshot 字段不在此声明，
 // 而是分别由「是否已注册到 registry」与「是否在 DefaultSnapshotTypes」动态派生，保证一致。
 var metaTable = map[string]catalogMeta{
-	"ma5":  {name: "MA5", group: "均线", valueType: "number", params: map[string]interface{}{"period": 5}, order: 10},
-	"ma10": {name: "MA10", group: "均线", valueType: "number", params: map[string]interface{}{"period": 10}, order: 11},
-	"ma20": {name: "MA20", group: "均线", valueType: "number", params: map[string]interface{}{"period": 20}, order: 12},
-	"ma30": {name: "MA30", group: "均线", valueType: "number", params: map[string]interface{}{"period": 30}, order: 13},
-	"ma60": {name: "MA60", group: "均线", valueType: "number", params: map[string]interface{}{"period": 60}, order: 14},
+	"ma5":   {name: "MA5", group: "均线", valueType: "number", params: map[string]interface{}{"period": 5}, order: 10},
+	"ma10":  {name: "MA10", group: "均线", valueType: "number", params: map[string]interface{}{"period": 10}, order: 11},
+	"ma20":  {name: "MA20", group: "均线", valueType: "number", params: map[string]interface{}{"period": 20}, order: 12},
+	"ma30":  {name: "MA30", group: "均线", valueType: "number", params: map[string]interface{}{"period": 30}, order: 13},
+	"ma60":  {name: "MA60", group: "均线", valueType: "number", params: map[string]interface{}{"period": 60}, order: 14},
+	"ma120": {name: "MA120", group: "均线", valueType: "number", params: map[string]interface{}{"period": 120}, order: 15},
 
 	"macd_dif": {name: "MACD-DIF(快线)", group: "MACD", valueType: "number", params: macdParams(), order: 20},
 	"macd_dea": {name: "MACD-DEA(信号线)", group: "MACD", valueType: "number", params: macdParams(), order: 21},

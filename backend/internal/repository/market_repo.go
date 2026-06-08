@@ -154,6 +154,17 @@ func (r *IndicatorRepository) GetSnapshots(ctx context.Context, market string, c
 	return snaps, err
 }
 
+// GetSnapshotsRange 取单只标的在 [from, to] 区间内逐交易日的指标快照（升序），
+// 供 K 线接口按 bar 对齐附带 point-in-time 指标。
+func (r *IndicatorRepository) GetSnapshotsRange(ctx context.Context, market, code string, from, to time.Time) ([]model.StockIndicatorSnapshot, error) {
+	var snaps []model.StockIndicatorSnapshot
+	err := r.db.WithContext(ctx).
+		Where("market = ? AND stock_code = ? AND trade_date BETWEEN ? AND ?", market, code, from, to).
+		Order("trade_date asc").
+		Find(&snaps).Error
+	return snaps, err
+}
+
 func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
 	var t sql.NullTime
 	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
