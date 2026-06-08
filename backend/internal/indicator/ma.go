@@ -42,4 +42,5 @@ func init() {
 	registerMA("ma20", 20)
 	registerMA("ma30", 30)
 	registerMA("ma60", 60)
+	registerMA("ma120", 120)
 }

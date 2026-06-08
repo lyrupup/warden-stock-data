@@ -24,7 +24,7 @@
 | 全局状态 | **zustand** | 管理员认证、主题 |
 | 请求器 | **ky** | 基于 fetch，封装于 `core/http-client/` |
 | 表单 | **react-hook-form + zod** | 凭证创建 / 作业配置表单与校验 |
-| 图表 | **lightweight-charts** | K 线图（含 MA5/10/20/30/60 叠加 + 成交量副图）、分时图 |
+| 图表 | **lightweight-charts** | K 线图（MA/BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量副图 + 成交量副图，指标读后端接口）、分时图 |
 | 国际化 | **i18next + react-i18next** | 语言包置于 `core/i18n/locales/`（V1 中文为主） |
 | 测试 | **Vitest + Testing Library + MSW** | 单测 + 组件测试 + 接口 Mock |
 | 代码规范 | ESLint + Prettier | 统一风格 |
@@ -234,11 +234,15 @@ interface IAuthState {
 - **个股行情详情**：`/market/quote/:code` 按路由 `code` 拉取数据，三态处理：
   - **加载中**：拉取快照时展示 Loading（spinner + 提示）。
   - **错误 / 无数据**：股票不存在或拉取失败时展示错误卡片与「返回搜索」入口。
-  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图 + 乖离副图 + 做 T 研判，60s 轮询，见 §6.5）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5/10/20/30/60 叠加 + 成交量副图）+ 指标面板。
+  - **成功**：个股快照卡（现价 / 开高低收 / 量额 / 换手率，stale 时「数据延迟」徽标）+ **分时图**（`intraday-chart`，价格线 + 均价线 + 昨收基准线 + 分时量副图 + 乖离副图 + 做 T 研判，60s 轮询，见 §6.5）+ **K 线图**（`kline-chart`，日/周/月 + 复权切换 + MA5~MA120/BOLL 主图叠加 + MACD/KDJ/RSI/ATR/动量 可切换副图 + 成交量副图）+ 指标快照面板。
+
+> **K 线指标改为读接口（不再前端手算）**：图表所有指标值来自 `GET /admin/market/stocks/{code}/kline?indicators=...`（`useStockKlineIndicators`），返回 `{bars, indicators}`，前端按 `trade_date` 对齐绘制。详情页指标开关（BOLL + MACD/KDJ/RSI/ATR/动量）经 `indicatorTypesFor()` 推导出请求的指标类型集合一次性拉取；`kline-chart.tsx` 保留 `computeMA` 导出仅供其它模块复用，绘图不再调用。
 
 ### 6.4 运维（features/ops）
 
-- **数据源**：`GET /admin/datasources` 展示 source/market/优先级/健康状态；`PUT` 配置启停 / 连接池；「探测」按钮 → `POST .../healthcheck`。
+- **数据源**：`GET /admin/datasources` 展示 source/market/优先级/健康状态；`PUT` 配置启停 / 连接池；「探测」按钮 → `POST .../healthcheck`。页面顶部新增两块运维面板（数据 `GET /admin/freshness`）：
+  - **数据完整性与新鲜度**：最新交易日 / K 线更新至 / 指标快照最新日 / 起始日 / 证券总数 / 最近扫描；**日 K 线覆盖率**（`kline_stock_count`÷证券总数）与**指标快照覆盖率**（最新快照日覆盖股数÷证券总数）进度条；默认逐日快照指标集合 `default_snapshot_types` 标签展示。
+  - **数据存储与计算策略**：静态矩阵，标注日 K（落库快照）/ 周月 K（实时回源不落库）/ 分时（实时透传）/ 日线指标（快照）/ 周月指标 + 非默认指标（实时计算）各自的存储方式、计算时机、落库表与接口，便于运维区分。
 - **更新作业**：
   - 作业配置表单：cron 表达式（默认 `0 0 17 * * *`）、分批大小（默认 20）、并发度（默认 10）、启停 → `PUT /admin/jobs/:id`。
   - 手动触发：选择类型（全量/增量/快照/指标）+ 市场 + 可选代码 → `POST /admin/jobs/:id/run`，返回 runId 后跳到进度视图。

@@ -36,27 +36,3 @@ func ComputeAll(s Series, types []string) (map[string]decimal.Decimal, error) {
 	}
 	return out, nil
 }
-
-// Catalog returns registered indicator metadata for /open/v1/meta.
-func Catalog() []map[string]interface{} {
-	return []map[string]interface{}{
-		{"type": "ma5", "name": "MA5", "implemented": true},
-		{"type": "ma10", "name": "MA10", "implemented": true},
-		{"type": "ma20", "name": "MA20", "implemented": true},
-		{"type": "ma30", "name": "MA30", "implemented": true},
-		{"type": "ma60", "name": "MA60", "implemented": true},
-		{"type": "bias5", "name": "乖离率5", "implemented": true},
-		{"type": "bias10", "name": "乖离率10", "implemented": true},
-		{"type": "bias20", "name": "乖离率20", "implemented": true},
-		{"type": "ma_align", "name": "均线多头排列", "implemented": true},
-		{"type": "amplitude", "name": "振幅", "implemented": true},
-		{"type": "amplitude_streak", "name": "连续振幅", "implemented": true},
-		{"type": "pct_change", "name": "涨跌幅", "implemented": true},
-		{"type": "pct_change5", "name": "5日涨跌幅", "implemented": true},
-		{"type": "vol_ratio", "name": "量比", "implemented": true},
-		{"type": "macd", "name": "MACD", "implemented": false},
-		{"type": "kdj", "name": "KDJ", "implemented": false},
-		{"type": "rsi", "name": "RSI", "implemented": false},
-		{"type": "boll", "name": "BOLL", "implemented": false},
-	}
-}

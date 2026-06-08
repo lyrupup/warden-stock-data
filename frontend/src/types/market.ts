@@ -71,6 +71,12 @@ export type TIndicatorResult = {
   values: Record<string, TDecimal>;
 };
 
+/** K 线接口带指标返回：bars + 与之按 trade_date 对齐的逐 bar 指标 */
+export type TKlineIndicators = {
+  bars: TKline[];
+  indicators: TIndicatorResult[];
+};
+
 export type EKlinePeriod = "day" | "week" | "month";
 /** none=不复权，对应后端 adjust 空字符串 */
 export type EKlineAdjust = "none" | "qfq" | "hfq";

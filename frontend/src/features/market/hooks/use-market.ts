@@ -47,6 +47,19 @@ export const useStockKline = (
     enabled: !!code,
   });
 
+/** K 线 + 逐 bar 指标：types 变化会重新拉取，绘图指标全部来自后端 */
+export const useStockKlineIndicators = (
+  code: string | null,
+  period: EKlinePeriod,
+  adjust: EKlineAdjust,
+  types: string[],
+) =>
+  useQuery({
+    queryKey: [...marketKeys.kline(code ?? "", period, adjust), "ind", [...types].sort().join(",")],
+    queryFn: () => marketApi.klineIndicators(code!, { period, adjust, types }),
+    enabled: !!code && types.length > 0,
+  });
+
 export const useStockIntraday = (code: string | null) =>
   useQuery({
     queryKey: marketKeys.intraday(code ?? ""),

@@ -425,6 +425,7 @@ paths:
         - { in: query, name: period, schema: { type: string, enum: [day, week, month], default: day } }
         - { in: query, name: adjust, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
         - { in: query, name: limit, schema: { type: integer, default: 120 } }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型；传入则返回 {bars, indicators}（前端 K 线图绘制用）" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -461,7 +462,7 @@ paths:
       security: [{ AdminJWT: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -534,7 +535,12 @@ paths:
   /open/v1/stocks/{code}/kline:
     get:
       tags: [OpenMarket]
-      summary: 个股 K 线（支持 limit 或 from/to 区间，回测取历史区间用）
+      summary: 个股 K 线（支持 limit 或 from/to 区间；可选附带逐 bar 指标）
+      description: >
+        默认仅返回 bars 数组。传入 indicators 参数时，额外返回与 bars 按 trade_date 对齐的逐 bar 指标，
+        响应体变为 { bars, indicators } 对象；采用「快照优先 + 实时补齐」：日 K + 前复权且指标在默认快照集合内
+        → 读快照（含完整历史预热）；周/月 K、后复权、非默认指标（如 ma120）或快照缺口 → 在返回 bars 上逐 bar
+        point-in-time 实时计算。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量 等副图绘制。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
@@ -543,16 +549,23 @@ paths:
         - { in: query, name: limit, schema: { type: integer, default: 120 }, description: "最近 N 根；与 from/to 互斥，区间优先" }
         - { in: query, name: from, schema: { type: string, format: date }, description: "起始交易日（含），回测区间用" }
         - { in: query, name: to, schema: { type: string, format: date }, description: "结束交易日（含），回测区间用" }
+        - { in: query, name: indicators, schema: { type: string }, description: "逗号分隔指标类型(取值见 /open/v1/meta 的 indicators)；传入则返回 {bars, indicators}" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
-          description: ok
+          description: >
+            不带 indicators 时 data 为 Kline 数组；带 indicators 时 data 为 {bars, indicators} 对象。
           content:
             application/json:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
-                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+                  - properties:
+                      data:
+                        oneOf:
+                          - type: array
+                            items: { $ref: "#/components/schemas/Kline" }
+                          - $ref: "#/components/schemas/KlineWithIndicators"
 
   /open/v1/stocks/{code}/intraday:
     get:
@@ -576,10 +589,17 @@ paths:
     get:
       tags: [OpenIndicator]
       summary: 单只个股技术指标（实时计算，缺失回退）
+      description: >
+        逗号分隔指标类型。可用类型见 /open/v1/meta 的 indicators（指标目录），含：
+        均线 ma5/ma10/ma20/ma30/ma60；乖离 bias5/bias10/bias20；ma_align；
+        振幅 amplitude/amplitude_streak；动量 pct_change/pct_change5/pct_change20/pct_change60；
+        量比 vol_ratio；MACD macd_dif/macd_dea/macd_bar(12,26,9)；
+        KDJ kdj_k/kdj_d/kdj_j(9,3,3)；RSI rsi6/rsi12/rsi24；
+        BOLL boll_mid/boll_upper/boll_lower(20,2)；ATR atr14/atr20。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: path, name: code, required: true, schema: { type: string } }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型" }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
         "200":
@@ -598,10 +618,13 @@ paths:
       description: >
         读 stock_indicator_snapshots 历史指标快照。指定 trade_date 即取该交易日的
         point-in-time 指标（无未来函数），可用于按日回放的量化回测信号生成。
+        盘后全市场扫描默认落库的指标集合：ma5/10/20/30/60、macd_dif/dea/bar、
+        kdj_k/d/j、rsi6/12/24、boll_mid/upper/lower、atr14/atr20、pct_change20/60；
+        其余指标（如 bias、vol_ratio）可经单只实时接口按需计算。
       security: [{ HmacSignature: [] }]
       parameters:
         - { in: query, name: codes, required: true, schema: { type: string }, description: "逗号分隔" }
-        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" } }
+        - { in: query, name: types, schema: { type: string, default: "ma5,ma10,ma20,ma30,ma60" }, description: "逗号分隔指标类型，取值见 indicator_catalog" }
         - { in: query, name: trade_date, schema: { type: string, format: date }, description: "指定历史交易日(point-in-time)；为空取最新交易日" }
         - { in: query, name: market, schema: { type: string, default: CN } }
       responses:
@@ -651,7 +674,10 @@ paths:
   /open/v1/meta:
     get:
       tags: [OpenMeta]
-      summary: 元数据（市场列表 / 指标目录 / 数据新鲜度）
+      summary: 元数据（市场列表 / 指标目录 / 默认快照指标 / 数据新鲜度）
+      description: >
+        接入方发现服务能力的入口。indicators 为动态派生的指标目录（含 value_type/group/params/snapshot/implemented）；
+        default_snapshot_types 列出可经 /open/v1/indicators 批量按交易日（point-in-time）读取的指标，是构建量化回测策略的关键依据。
       security: [{ HmacSignature: [] }]
       responses:
         "200":
@@ -823,6 +849,13 @@ components:
         last_scan_at: { type: string, format: date-time, nullable: true }
         securities_count: { type: integer }
         kline_stock_count: { type: integer, description: "库中已落库行情数据的股票数量（已从数据源拉取覆盖度）" }
+        indicator_snapshot_latest_date: { type: string, format: date, description: "指标快照最新交易日" }
+        indicator_snapshot_earliest_date: { type: string, format: date, description: "指标快照最早交易日" }
+        indicator_snapshot_stock_count: { type: integer, description: "最新快照交易日有指标快照的股票数（当日快照覆盖完整性）" }
+        default_snapshot_types:
+          type: array
+          items: { type: string }
+          description: "盘后逐日落库（可批量按日回放）的默认指标集合；其余指标走实时计算"
 
     IndexQuote:
       type: object
@@ -904,23 +937,53 @@ components:
         values:
           type: object
           additionalProperties: { $ref: "#/components/schemas/Decimal" }
-          example: { ma5: "12.3400", ma10: "12.1000", ma20: "11.8000", ma30: "11.5000", ma60: "10.9000" }
+          example: { ma5: "12.3400", ma20: "11.8000", ma60: "10.9000", macd_bar: "0.1500", kdj_k: "72.3000", rsi6: "65.0000", boll_upper: "13.2000", atr14: "0.4500" }
+
+    KlineWithIndicators:
+      type: object
+      description: K 线接口带 indicators 参数时的返回；indicators 与 bars 按 trade_date 对齐（point-in-time）。
+      properties:
+        bars:
+          type: array
+          items: { $ref: "#/components/schemas/Kline" }
+        indicators:
+          type: array
+          items: { $ref: "#/components/schemas/IndicatorResult" }
 
     Meta:
       type: object
       properties:
         markets:
           type: array
-          items: { type: string }
-          example: [CN]
-        indicator_catalog:
-          type: array
           items:
             type: object
             properties:
-              type: { type: string, example: ma }
-              name: { type: string, example: "移动均线 MA" }
-              value_type: { type: string, enum: [number, bool] }
-              unit: { type: string }
-              params: { type: array, items: { type: object } }
+              code: { type: string, example: CN }
+              name: { type: string, example: "A股" }
+              enabled: { type: string, example: "true" }
+        indicators:
+          type: array
+          description: >
+            指标目录，由后端 registry 动态派生（注册即可见）。接入方据此发现可用指标并构建量化策略。
+          items:
+            type: object
+            properties:
+              type: { type: string, example: macd_bar }
+              name: { type: string, example: "MACD柱" }
+              group: { type: string, example: "MACD" }
+              value_type: { type: string, enum: [number, bool], example: number }
+              snapshot:
+                type: boolean
+                description: 是否进默认逐日快照（true 才能经 /open/v1/indicators 批量按交易日 point-in-time 读取；false 仅支持单只实时计算）
+                example: true
+              implemented: { type: boolean, example: true }
+              params:
+                type: object
+                description: 计算参数（口径），如 {fast:12,slow:26,signal:9}
+                additionalProperties: true
+        default_snapshot_types:
+          type: array
+          description: 盘后全市场扫描默认落库的指标集合，即可批量按交易日读取（回测）的指标类型。
+          items: { type: string }
+          example: [ma5, ma10, ma20, ma30, ma60, macd_dif, macd_dea, macd_bar, kdj_k, kdj_d, kdj_j, rsi6, rsi12, rsi24, boll_mid, boll_upper, boll_lower, atr14, atr20, pct_change20, pct_change60]
         freshness: { $ref: "#/components/schemas/Freshness" }

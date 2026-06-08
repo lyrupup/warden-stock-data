@@ -11,7 +11,8 @@ import (
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 )
 
-var defaultMATypes = []string{"ma5", "ma10", "ma20", "ma30", "ma60"}
+// defaultSnapshotTypes 复用指标包统一维护的默认逐日快照指标集合（回测友好），避免重复定义。
+var defaultSnapshotTypes = indicator.DefaultSnapshotTypes
 
 type UpdateService struct {
 	provider  market.IMarketProvider
@@ -93,7 +94,7 @@ func filterAfterWatermark(bars []model.StockDailyKline, wm *time.Time) []model.S
 
 func (s *UpdateService) ScanIndicators(ctx context.Context, code string, types []string) error {
 	if len(types) == 0 {
-		types = defaultMATypes
+		types = defaultSnapshotTypes
 	}
 	bars, err := s.loadBars(ctx, code, 120)
 	if err != nil || len(bars) == 0 {
@@ -109,14 +110,14 @@ func (s *UpdateService) ScanIndicators(ctx context.Context, code string, types [
 
 func (s *UpdateService) BackfillIndicators(ctx context.Context, code string, types []string) error {
 	if len(types) == 0 {
-		types = defaultMATypes
+		types = defaultSnapshotTypes
 	}
 	bars, err := s.klineRepo.List(ctx, s.market, code, "qfq", nil, nil, 0)
 	if err != nil || len(bars) == 0 {
 		return err
 	}
 	for i := range bars {
-		series := klinesToSeries(bars[: i+1])
+		series := klinesToSeries(bars[:i+1])
 		vals, err := indicator.ComputeAll(series, types)
 		if err != nil {
 			continue

@@ -131,9 +131,14 @@ func (r *IndicatorRepository) UpsertSnapshot(ctx context.Context, market, code s
 		Market: market, StockCode: code, TradeDate: tradeDate,
 		Values: datatypes.JSON(b), UpdatedAt: time.Now(),
 	}
+	// 冲突时按 JSONB 合并（已有 || 新值，同键以新值为准）而非整行覆盖：
+	// 这样用更小的 types 子集再次扫描不会抹掉该日已落库的其它指标，新增指标也能增量补字段。
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
-		DoUpdates: clause.AssignmentColumns([]string{"values", "updated_at"}),
+		Columns: []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"values":     gorm.Expr(`COALESCE(stock_indicator_snapshots."values", '{}'::jsonb) || excluded."values"`),
+			"updated_at": time.Now(),
+		}),
 	}).Create(&snap).Error
 }
 
@@ -149,6 +154,17 @@ func (r *IndicatorRepository) GetSnapshots(ctx context.Context, market string, c
 	return snaps, err
 }
 
+// GetSnapshotsRange 取单只标的在 [from, to] 区间内逐交易日的指标快照（升序），
+// 供 K 线接口按 bar 对齐附带 point-in-time 指标。
+func (r *IndicatorRepository) GetSnapshotsRange(ctx context.Context, market, code string, from, to time.Time) ([]model.StockIndicatorSnapshot, error) {
+	var snaps []model.StockIndicatorSnapshot
+	err := r.db.WithContext(ctx).
+		Where("market = ? AND stock_code = ? AND trade_date BETWEEN ? AND ?", market, code, from, to).
+		Order("trade_date asc").
+		Find(&snaps).Error
+	return snaps, err
+}
+
 func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string) (*time.Time, error) {
 	var t sql.NullTime
 	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
@@ -157,6 +173,26 @@ func (r *IndicatorRepository) LatestTradeDate(ctx context.Context, market string
 		return nil, err
 	}
 	return &t.Time, nil
+}
+
+// EarliestTradeDate 返回指标快照最早交易日，供运维查看快照历史覆盖区间。
+func (r *IndicatorRepository) EarliestTradeDate(ctx context.Context, market string) (*time.Time, error) {
+	var t sql.NullTime
+	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
+		Where("market = ?", market).Select("MIN(trade_date)").Scan(&t).Error
+	if err != nil || !t.Valid {
+		return nil, err
+	}
+	return &t.Time, nil
+}
+
+// SnapshotStockCountAt 返回某交易日有指标快照的股票数（唯一键 market+code+date，行数即股数），
+// 配合证券总数衡量「最新交易日指标快照的覆盖完整性」。
+func (r *IndicatorRepository) SnapshotStockCountAt(ctx context.Context, market string, date time.Time) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.StockIndicatorSnapshot{}).
+		Where("market = ? AND trade_date = ?", market, date).Count(&n).Error
+	return n, err
 }
 
 type SecurityRepository struct{ db *gorm.DB }

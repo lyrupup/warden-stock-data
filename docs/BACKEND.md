@@ -457,7 +457,7 @@ func (StockDailyKline) TableName() string { return "stock_daily_klines" }
 | POST | `/admin/jobs/runs/:runId/cancel` | 取消运行中作业 |
 | GET | `/admin/jobs/runs` | 执行记录（分页，含进度） |
 | GET | `/admin/jobs/runs/:runId` | 单次执行详情 / 进度 |
-| GET | `/admin/freshness` | 数据新鲜度（全市场更新到哪个交易日、最近扫描时间、已入库行情股票数 `kline_stock_count`）。性能：最新交易日走 `(market, trade_date)` 复合索引；`kline_stock_count` 取 `update_watermarks` 行数（每股一行），避免在数百万行 K 线上做 `MAX` 全表扫描与 `COUNT(DISTINCT)` |
+| GET | `/admin/freshness` | 数据新鲜度与完整性（供数据源管理页运维）。含：全市场更新到哪个交易日、最近扫描时间、已入库行情股票数 `kline_stock_count`、证券总数；**指标快照完整性**：`indicator_snapshot_latest_date`/`indicator_snapshot_earliest_date`（快照区间）、`indicator_snapshot_stock_count`（最新快照交易日的覆盖股数）；`default_snapshot_types`（默认逐日落库指标集合，其余实时计算）。性能：最新交易日走 `(market, trade_date)` 复合索引；`kline_stock_count` 取 `update_watermarks` 行数（每股一行），快照覆盖数取「最新快照日」当日行数（唯一键 `market+code+date`，行数即股数），均避免在数百万行上做 `COUNT(DISTINCT)` |
 
 > 管理 API 也可调用全部开放 API 的只读能力用于后台行情展示（后台前端直接复用 `/open/v1` 的 service 层或带管理员上下文的内部只读接口）。
 
@@ -564,7 +564,11 @@ func (p *GotdxProvider) Close() error
 
 > **作业类型**：`incremental`（增量 K 线+指标）、`full`（全量回补 K 线+逐日指标）、`indicator`/`snapshot`（仅指标）、`securities`（**仅同步证券列表**：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口，作为新股入库的轻量入口）。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`daily-incremental` 17:00、`securities-sync` 8:30），存量库也会自动补上后加入的默认作业。
 
-- **全市场扫描计算**（补齐原系统遗留缺口）：拉全市场 `securities` → 并发（信号量 channel + WaitGroup，迁移自原粗筛引擎）逐只拉 K 线 → 调 M3 指标引擎算 MA5/10/20/30/60 → upsert `stock_indicator_snapshots`。单只失败跳过不中断，`ctx` 取消即时退出。
+- **全市场扫描计算**（补齐原系统遗留缺口）：拉全市场 `securities` → 并发（信号量 channel + WaitGroup，迁移自原粗筛引擎）逐只拉 K 线 → 调 M3 指标引擎算默认指标集合 `defaultSnapshotTypes` → upsert `stock_indicator_snapshots`。单只失败跳过不中断，`ctx` 取消即时退出。
+  - **默认落库指标集合（回测友好）**：`ma5/10/20/30/60` + `macd_dif/dea/bar` + `kdj_k/d/j` + `rsi6/12/24` + `boll_mid/upper/lower` + `atr14/atr20` + `pct_change20/60`（见 `internal/service/update_service.go:defaultSnapshotTypes`）。指标值统一存 `values`（JSONB），新增指标无需改表结构；接入方做量化回测时按 `trade_date` 直接读 point-in-time 历史指标，无需重算。
+  - **数据不足处理**：`ComputeAll` 任一指标数据不足即跳过该日快照（早期不足 60 根的历史日因 MA60 无法计算自然跳过），保证 point-in-time 一致；其余长尾指标（如 bias、vol_ratio）不入默认快照，走单只实时接口按需计算。
+  - **JSONB 合并写入（避免子集扫描丢字段）**：`IndicatorRepository.UpsertSnapshot` 冲突时按 `values = COALESCE(已有,'{}') || excluded.values` **JSONB 合并**（同键以新值为准），而非整行覆盖。好处：① 用更小的 `types` 子集再次扫描不会抹掉该日已落库的其它指标；② 新增指标可增量补字段，无需整库回填即可逐步补齐（但要把历史区间一次性补齐仍建议跑 `full` 作业逐日回算）。注意：若从默认集合移除某指标，合并语义会**保留其历史旧值**（陈旧键），如需清除需单独处理。
+  - **快照更新触发**：日常由默认 `daily-incremental`（17:00）逐日写「最新交易日」快照（`ScanIndicators`）；要为历史区间补齐新增指标，需跑 `full` 作业 / `cmd/backfill`（`BackfillIndicators` 逐日 point-in-time 回算）。`indicator`/`incremental` 作业只更新最新一天。
 - **逐历史交易日指标快照（point-in-time，回测友好）**：`stock_indicator_snapshots` 以 `(market, code, trade_date)` 为唯一键，每个历史交易日一行。扫描支持两种模式：
   - **增量模式**（盘后默认）：只为「最新交易日」算并 upsert 一行。
   - **回补模式**（首次 / 指定区间）：对 `[from, to]` 内每个交易日 `t`，用截止 `t` 的 K 线序列切片 `Bars[0:idx(t)+1]` 计算指标并 upsert，**无未来函数**。接入方回测时按 `trade_date` 直接读历史指标，无需重算。
@@ -612,7 +616,24 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 
 - **MA（V1 交付）**：迁移原系统 `factor.MA`，注册 ma5/ma10/ma20/ma30/ma60（period 可参数化）。纯函数、表驱动单测覆盖。
 - **迁移因子**：`ma_align / bias / amplitude / amplitude_streak / pct_change / field / vol_ratio` 全部迁移，注册进 catalog 供 `/open/v1/meta` 暴露。
-- **扩展预留**：`MACD/KDJ/RSI/BOLL` 仅在 catalog 占位 + 留 `Register` 空实现 TODO，本期不实现。
+- **经典技术指标（已落地，量化策略/回测刚需）**：在均线/迁移因子基础上补齐以下指标，均经 `IIndicator` 接口注册、纯函数、表驱动单测覆盖（`internal/indicator/{macd,rsi,kdj,boll,atr}.go` + `oscillators_test.go`）。多值指标按子项拆为独立 `type` 注册，契合单值 `Compute` 接口与 JSONB 扁平快照：
+
+  | 指标 | 注册 type | 口径/默认参数 |
+  |------|-----------|---------------|
+  | MACD | `macd_dif` `macd_dea` `macd_bar` | EMA12/EMA26、DEA=DIF 的 EMA9、柱=(DIF-DEA)×2（通达信口径） |
+  | KDJ | `kdj_k` `kdj_d` `kdj_j` | RSV(9)；K=SMA(RSV,3,1)、D=SMA(K,3,1) 初值 50；J=3K-2D |
+  | RSI | `rsi6` `rsi12` `rsi24` | Wilder 平滑；avgLoss=0 时 RSI=100 |
+  | BOLL | `boll_mid` `boll_upper` `boll_lower` | 中轨 MA20、上/下轨 ±2×收盘价总体标准差 |
+  | ATR | `atr14` `atr20` | 真实波幅 Wilder 平滑，用于动态止损/轨道宽度 |
+  | 动量 | `pct_change20` `pct_change60` | 中长期 N 日涨跌幅 |
+
+- **扩展预留**：新增指标 = 实现 `IIndicator` 接口 + `Register` + 在 `catalog.go` 的 `metaTable` 追加元数据，零侵入 M2/M4；多值指标继续按子项拆 type。
+- **指标目录动态派生（接入方发现能力的单一事实源）**：`Catalog()`（`internal/indicator/catalog.go`）**遍历 registry 动态生成**——「注册即可见」，避免手写常量与实现漂移。每项含：
+  - `type` / `name` / `group`（分类）/ `value_type`（number\|bool）/ `params`（计算口径，如 `{fast:12,slow:26,signal:9}`）；
+  - `implemented`：由「是否已注册」派生，恒为 true；
+  - `snapshot`：由「是否在 `DefaultSnapshotTypes`」派生，标识该指标**能否经 `/open/v1/indicators` 批量按交易日 point-in-time 读取**（回测构建策略的关键判断）。
+- **默认快照指标集合下沉指标包**：`indicator.DefaultSnapshotTypes` 统一维护盘后逐日快照默认落库的指标集合，service（`update_service.go`）直接引用，避免重复定义；`/open/v1/meta` 额外暴露 `default_snapshot_types`，接入方一眼可知哪些指标可按日回放。
+- **`/open/v1/meta` 响应**（`MetaService.Meta`）：`markets` + `indicators`（目录）+ `default_snapshot_types` + `freshness`。`indicators` 与 `default_snapshot_types` 即接入方发现「支持哪些指标、哪些可批量回放」的入口。
 - **两种时机**：默认读 `stock_indicator_snapshots`（M2 盘后批量算好，高并发只读）；未入快照或单只明细时实时拉 K 线计算，结果一致。
 - **归属边界（重要，见 PRD M3）**：本服务**只做因子「计算」并对外输出数值**；原系统 `rule` 规则组合引擎（`left op right` + and/or 选股条件求值）**不迁入本服务、不暴露对外 API**——它属于「怎么用因子」的业务策略层，归接入方。即使 `ma_align`/`amplitude_streak` 等布尔因子也只是确定性计算，仍属计算层留在本服务。
 
@@ -620,6 +641,7 @@ func Register(i IIndicator) { registry[i.Type()] = i }
 
 - Handler 仅做绑定 + 调 service + 组装；service 复用 M1/M2/M3。
 - 指标接口：`?types=ma5,ma60` → 优先快照、缺失则实时算；批量接口强制走快照（性能）。
+- **K 线带指标**：`/stocks/{code}/kline?indicators=ma5,macd_bar,...` 传入 `indicators` 时，额外返回与 bars 按 `trade_date` 对齐的**逐 bar 指标**，响应体变为 `{bars, indicators}`（不传则仍只返回 bars 数组，向后兼容）。由 `IndicatorService.KlineIndicators` 实现「**快照优先 + 实时补齐**」：日 K + 前复权且指标在默认快照集合内 → 读 `stock_indicator_snapshots` 区间快照（`GetSnapshotsRange`，含完整历史预热、口径统一）；周/月 K、后复权、非默认指标（如 `ma120`）或快照缺口 → 在返回 bars 上逐 bar `bars[:i+1]` point-in-time 实时计算补齐。单指标数据不足则该 bar 跳过该指标、不影响其它指标。供前端 K 线图叠加 MA/BOLL 与 MACD/KDJ/RSI/ATR/动量副图绘制（前端不再手算）。
 - 所有接口透传 `ctx`（超时中断），降级返回 stale。
 
 ### M5 鉴权与凭证管理

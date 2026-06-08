@@ -86,6 +86,17 @@ func (h *MarketHandler) Kline(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, service.BizCode(err))
 		return
 	}
+	// 带 indicators 参数时附带与 bars 对齐的逐 bar 指标（快照优先 + 实时补齐），
+	// 返回 {bars, indicators}；不带该参数时保持只返回 bars 数组（向后兼容）。
+	if types := utils.SplitCSV(c.Query("indicators")); len(types) > 0 {
+		adjust := q.Adjust
+		if adjust == "" {
+			adjust = "qfq"
+		}
+		inds := h.indicator.KlineIndicators(c.Request.Context(), q.Code, q.Period, adjust, bars, types)
+		response.OK(c, service.KlineIndicatorsResponse{Bars: bars, Indicators: inds})
+		return
+	}
 	response.OK(c, bars)
 }
 

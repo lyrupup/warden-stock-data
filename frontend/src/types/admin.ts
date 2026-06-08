@@ -77,6 +77,10 @@ export type TFreshness = {
   last_scan_at: string | null;
   securities_count: number;
   kline_stock_count: number;
+  indicator_snapshot_latest_date: string;
+  indicator_snapshot_earliest_date: string;
+  indicator_snapshot_stock_count: number;
+  default_snapshot_types: string[];
 };
 
 export type TCreateCredentialReq = {

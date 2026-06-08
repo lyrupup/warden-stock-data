@@ -15,6 +15,8 @@ func init() {
 	Register(amplitudeStreakIndicator{typ: "amplitude_streak", threshold: decimal.NewFromFloat(5)})
 	Register(pctChangeIndicator{typ: "pct_change", days: 1})
 	Register(pctChangeIndicator{typ: "pct_change5", days: 5})
+	Register(pctChangeIndicator{typ: "pct_change20", days: 20})
+	Register(pctChangeIndicator{typ: "pct_change60", days: 60})
 	Register(fieldIndicator{typ: "close", field: "close"})
 	Register(fieldIndicator{typ: "volume", field: "volume"})
 	Register(volRatioIndicator{typ: "vol_ratio", period: 5})
