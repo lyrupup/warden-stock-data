@@ -35,7 +35,10 @@ func NewMetaService(
 type Meta struct {
 	Markets    []map[string]string      `json:"markets"`
 	Indicators []map[string]interface{} `json:"indicators"`
-	Freshness  Freshness                `json:"freshness"`
+	// DefaultSnapshotTypes 为盘后全市场扫描默认落库的指标集合，即可经
+	// /open/v1/indicators 批量按交易日（point-in-time）读取的指标，供接入方构建量化回测信号。
+	DefaultSnapshotTypes []string  `json:"default_snapshot_types"`
+	Freshness            Freshness `json:"freshness"`
 }
 
 type Freshness struct {
@@ -58,8 +61,9 @@ func (s *MetaService) Meta(ctx context.Context) (*Meta, error) {
 		Markets: []map[string]string{
 			{"code": "CN", "name": "A股", "enabled": "true"},
 		},
-		Indicators: indicator.Catalog(),
-		Freshness:  *f,
+		Indicators:           indicator.Catalog(),
+		DefaultSnapshotTypes: indicator.DefaultSnapshotTypes,
+		Freshness:            *f,
 	}, nil
 }
 

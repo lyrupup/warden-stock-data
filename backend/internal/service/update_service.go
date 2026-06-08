@@ -11,19 +11,8 @@ import (
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 )
 
-// defaultSnapshotTypes 为全市场扫描 / 逐日指标快照默认落库的指标集合。
-// 在均线基础上纳入回测高频使用的经典技术指标（MACD/KDJ/RSI/BOLL/ATR）与中长期动量，
-// 使接入方可按交易日直接读 point-in-time 历史指标，无需重算（回测友好）。
-// 指标值统一存入 stock_indicator_snapshots.values（JSONB），新增指标无需改表结构。
-var defaultSnapshotTypes = []string{
-	"ma5", "ma10", "ma20", "ma30", "ma60",
-	"macd_dif", "macd_dea", "macd_bar",
-	"kdj_k", "kdj_d", "kdj_j",
-	"rsi6", "rsi12", "rsi24",
-	"boll_mid", "boll_upper", "boll_lower",
-	"atr14", "atr20",
-	"pct_change20", "pct_change60",
-}
+// defaultSnapshotTypes 复用指标包统一维护的默认逐日快照指标集合（回测友好），避免重复定义。
+var defaultSnapshotTypes = indicator.DefaultSnapshotTypes
 
 type UpdateService struct {
 	provider  market.IMarketProvider
@@ -128,7 +117,7 @@ func (s *UpdateService) BackfillIndicators(ctx context.Context, code string, typ
 		return err
 	}
 	for i := range bars {
-		series := klinesToSeries(bars[: i+1])
+		series := klinesToSeries(bars[:i+1])
 		vals, err := indicator.ComputeAll(series, types)
 		if err != nil {
 			continue
