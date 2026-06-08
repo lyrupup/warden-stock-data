@@ -849,6 +849,13 @@ components:
         last_scan_at: { type: string, format: date-time, nullable: true }
         securities_count: { type: integer }
         kline_stock_count: { type: integer, description: "库中已落库行情数据的股票数量（已从数据源拉取覆盖度）" }
+        indicator_snapshot_latest_date: { type: string, format: date, description: "指标快照最新交易日" }
+        indicator_snapshot_earliest_date: { type: string, format: date, description: "指标快照最早交易日" }
+        indicator_snapshot_stock_count: { type: integer, description: "最新快照交易日有指标快照的股票数（当日快照覆盖完整性）" }
+        default_snapshot_types:
+          type: array
+          items: { type: string }
+          description: "盘后逐日落库（可批量按日回放）的默认指标集合；其余指标走实时计算"
 
     IndexQuote:
       type: object

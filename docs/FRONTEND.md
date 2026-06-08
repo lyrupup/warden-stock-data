@@ -240,7 +240,9 @@ interface IAuthState {
 
 ### 6.4 运维（features/ops）
 
-- **数据源**：`GET /admin/datasources` 展示 source/market/优先级/健康状态；`PUT` 配置启停 / 连接池；「探测」按钮 → `POST .../healthcheck`。
+- **数据源**：`GET /admin/datasources` 展示 source/market/优先级/健康状态；`PUT` 配置启停 / 连接池；「探测」按钮 → `POST .../healthcheck`。页面顶部新增两块运维面板（数据 `GET /admin/freshness`）：
+  - **数据完整性与新鲜度**：最新交易日 / K 线更新至 / 指标快照最新日 / 起始日 / 证券总数 / 最近扫描；**日 K 线覆盖率**（`kline_stock_count`÷证券总数）与**指标快照覆盖率**（最新快照日覆盖股数÷证券总数）进度条；默认逐日快照指标集合 `default_snapshot_types` 标签展示。
+  - **数据存储与计算策略**：静态矩阵，标注日 K（落库快照）/ 周月 K（实时回源不落库）/ 分时（实时透传）/ 日线指标（快照）/ 周月指标 + 非默认指标（实时计算）各自的存储方式、计算时机、落库表与接口，便于运维区分。
 - **更新作业**：
   - 作业配置表单：cron 表达式（默认 `0 0 17 * * *`）、分批大小（默认 20）、并发度（默认 10）、启停 → `PUT /admin/jobs/:id`。
   - 手动触发：选择类型（全量/增量/快照/指标）+ 市场 + 可选代码 → `POST /admin/jobs/:id/run`，返回 runId 后跳到进度视图。
