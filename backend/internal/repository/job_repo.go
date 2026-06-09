@@ -112,6 +112,18 @@ func (r *JobRepository) SaveRun(ctx context.Context, run *model.UpdateJobRun) er
 	return r.db.WithContext(ctx).Save(run).Error
 }
 
+// UpdateRunProgress 仅更新 running 作业的进度计数，避免取消后覆盖终态 status。
+func (r *JobRepository) UpdateRunProgress(ctx context.Context, runID uint, processed, succeeded, failed, skipped int) error {
+	return r.db.WithContext(ctx).Model(&model.UpdateJobRun{}).
+		Where("id = ? AND status = ?", runID, "running").
+		Updates(map[string]interface{}{
+			"processed": processed,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"skipped":   skipped,
+		}).Error
+}
+
 // LatestRunAt returns the most recent job run timestamp (finished_at preferred).
 func (r *JobRepository) LatestRunAt(ctx context.Context) (*time.Time, error) {
 	var run model.UpdateJobRun

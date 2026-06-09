@@ -218,10 +218,12 @@ func (h *JobHandler) CancelRun(c *gin.Context) {
 		response.OK(c, nil)
 		return
 	}
-	// running：发出取消信号，由执行 goroutine 落终态并接力下一个 waiting。
-	// waiting：无执行 goroutine，直接置为 canceled（不影响队列其它作业）。
+	// running：发出取消信号，worker 检测 ctx 后立即退出，Run 落终态并接力 waiting。
+	// waiting：无执行 goroutine，直接置为 canceled 并手动接力队列。
 	if run.Status == "running" {
 		h.jobRunner.Cancel(uint(id))
+	} else {
+		h.jobRunner.PromoteNext(run.JobType)
 	}
 	now := time.Now()
 	run.Status = "canceled"
