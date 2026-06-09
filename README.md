@@ -75,16 +75,19 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 ## 🚀 快速启动（后端）
 
 ```bash
-# 1. 启动基础设施
-cd backend/deploy && docker compose up -d postgres redis
-
-# 2. 启动 API 服务（gotdx 行情源，需可访问通达信节点）
 cd backend
-cp .env.example .env   # 可按需修改
-make tidy && make run
+cp .env.example .env   # 可按需修改（本地与 Docker 共用此文件）
+make infra-up          # 启动 postgres + redis
+make tidy && make run  # 自动加载 .env 并启动 API
 
-# 健康检查
 curl http://localhost:8080/health
+```
+
+**线上 Docker 一键部署**（服务器 `git pull` 后）：
+
+```bash
+cp backend/.env.example backend/.env   # 首次，填写生产配置
+cd backend/deploy && ./deploy.sh
 ```
 
 默认管理员：`admin` / `admin123`（可通过环境变量 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 覆盖）。

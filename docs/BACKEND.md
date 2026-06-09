@@ -733,24 +733,131 @@ func TestVerify(t *testing.T) {
 
 ## 7. 基础设施与部署
 
-### 7.1 docker-compose（节选）
+### 7.1 运行模式总览
+
+| 场景 | 后端进程 | 基础设施 | 典型命令 |
+|------|----------|----------|----------|
+| **本地开发** | 本机 Go 直跑 | 仅 PostgreSQL、Redis 容器化 | `make infra-up` + `make run` |
+| **线上部署** | Docker 镜像 | postgres + redis + backend 全容器化 | `backend/deploy/deploy.sh` |
+
+原则：**开发改代码走 `go run`，部署走镜像**；本地与 Docker **共用** `backend/.env` 一份环境变量文件。
+
+### 7.2 本地开发（Go 直跑）
+
+#### 前置条件
+
+- 本机 **Go 1.26+**（与 `go.mod` 中 `go 1.26.0` 对齐）。
+- Docker 可用（仅用于 PostgreSQL / Redis）。
+- 首次：`cp .env.example .env`，按需修改。
+
+#### 启动步骤
+
+```bash
+cd backend
+cp .env.example .env              # 首次；按需修改
+make infra-up                     # 启动 postgres + redis（读取 .env 做端口等变量替换）
+make tidy                         # 首次或依赖变更后
+make run                          # 自动 source .env 后 go run ./cmd/server
+
+curl http://localhost:8080/health
+```
+
+#### 本地开发约定
+
+| 项 | 约定 |
+|----|------|
+| 环境变量 | 统一维护 `backend/.env`；`make run` / `make backfill` 启动前自动 `source`；`config.Load()` 经 viper `AutomaticEnv()` 读取进程环境变量 |
+| 数据库/缓存 | `.env` 中 `PG_HOST=localhost`、`REDIS_HOST=localhost`（映射 compose 暴露端口） |
+| 行情源 | `MARKET_PROVIDER=gotdx`（唯一行情源，需可访问通达信节点） |
+| 热更新 | 修改 Go 代码后 Ctrl+C 重启 `make run` 即可，**不要**为改代码重建 backend 镜像 |
+| 依赖 | `make tidy`；国内拉取慢可 `export GOPROXY=https://goproxy.cn,direct` |
+| 单测/构建 | `make test`；`make build` 产出 `bin/warden-server` |
+| 历史回补 | `make backfill` 或 `go run ./cmd/backfill -codes=600000,000001` |
+| 默认管理员 | `ADMIN_USERNAME` / `ADMIN_PASSWORD`（默认 `admin` / `admin123`），首次启动写入 DB |
+
+### 7.3 统一环境变量（`backend/.env`）
+
+本地开发与 Docker 部署**共用** `backend/.env`（模板见 `.env.example`，已 `.gitignore` 忽略实际文件）。
+
+配置加载优先级（`config.Load()`）：
+
+1. 进程环境变量（来自 `make run` 的 `source .env`，或 compose `env_file`）
+2. `config/config.yaml`（镜像内兜底，无同名 env 时生效）
+3. `config.go` 中的 `SetDefault()`
+
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` 由 `main.go` 直接 `os.Getenv` 读取，同样来自 `.env`。
+
+Docker 部署时 compose 通过 `env_file: ../.env` 注入 backend 容器，并**仅覆盖**容器网络相关变量：
+
+| 变量 | `.env` 中填写 | Docker 容器内实际值 |
+|------|---------------|---------------------|
+| `PG_HOST` | `localhost` | `postgres`（compose `environment` 覆盖） |
+| `REDIS_HOST` | `localhost` | `redis`（compose `environment` 覆盖） |
+| 其余 | 与本地相同 | 与 `.env` 一致 |
+
+postgres 容器的 `POSTGRES_*` 由 compose 从 `.env` 的 `PG_USER` / `PG_PASSWORD` / `PG_DB` 变量替换注入，保持与 backend 连接配置一致。
+
+### 7.4 线上 Docker 部署
+
+#### 一键部署脚本
+
+服务器上 `git pull` 后执行：
+
+```bash
+cd backend/deploy
+./deploy.sh
+```
+
+脚本流程：校验 `backend/.env` 存在 → `docker compose build backend` → `docker compose up -d` → 轮询 `/health` 直至成功。
+
+首次部署前在服务器创建生产配置：
+
+```bash
+cp backend/.env.example backend/.env
+# 编辑：APP_ENV=prod、JWT_SECRET、CONFIG_ENC_KEY、MARKET_PROVIDER=gotdx 等
+```
+
+#### 镜像与编排
+
+- **Compose 项目名**：`name: warden_stock_data`（统一容器/网络前缀）。
+- **后端镜像**：`warden_stock_data-backend:latest`，由 `deploy/Dockerfile` 多阶段构建（`golang:1.26-alpine` → `alpine:3.20`，`CGO_ENABLED=0`）。
+- **数据持久化**：PostgreSQL 数据目录 bind mount 到 `backend/deploy/pgdata`（已 `.gitignore`），`init.sql` 在首次建库时执行。
+- **服务依赖**：`backend` `depends_on` `postgres`、`redis`；容器内通过服务名互联。
+
+> 生产密钥只写在服务器 `backend/.env`，禁止写入 `Dockerfile` 或提交到仓库。
+
+### 7.5 docker-compose 服务说明
+
+文件路径：`backend/deploy/docker-compose.yml`。
 
 ```yaml
 services:
-  postgres: { image: postgres:16, environment: [...], volumes: [./deploy/init.sql:/docker-entrypoint-initdb.d/init.sql] }
-  redis:    { image: redis:7 }
-  backend:  { build: ./backend, depends_on: [postgres, redis], env_file: ./backend/.env, ports: ["8080:8080"] }
+  postgres:
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB}
+  redis: { image: redis:7 }
+  backend:
+    env_file: [../.env]
+    environment:
+      PG_HOST: postgres      # 覆盖 .env 中的 localhost
+      REDIS_HOST: redis
 ```
 
-### 7.2 关键环境变量
+本地开发时通常 `make infra-up` **只启动 postgres 与 redis**；线上 `deploy.sh` 启动全部服务。
+
+### 7.6 关键环境变量
+
+完整列表见 `backend/.env.example`。摘录：
 
 ```bash
 APP_PORT=8080
 APP_ENV=dev
-JWT_SECRET=change_me                 # 管理员 JWT
+JWT_SECRET=change_me_dev_only        # 管理员 JWT
 CONFIG_ENC_KEY=32_bytes_key_for_aes_gcm________  # secretKey/数据源 token 加密
 
-# PostgreSQL / Redis
+# PostgreSQL / Redis（本地 localhost；Docker 部署时 PG_HOST/REDIS_HOST 由 compose 覆盖）
 PG_HOST=localhost PG_PORT=5432 PG_USER=postgres PG_PASSWORD=postgres PG_DB=warden_data PG_SSLMODE=disable
 REDIS_HOST=localhost REDIS_PORT=6379 REDIS_PASSWORD= REDIS_DB=0
 
@@ -769,7 +876,7 @@ SIGN_TS_SKEW_SEC=300                 # 时间戳允许偏差
 SIGN_NONCE_TTL_SEC=300               # nonce 防重放窗口
 ```
 
-### 7.3 中间件装配顺序
+### 7.7 中间件装配顺序
 
 ```
 管理 API： Recovery → Logger → CORS → RateLimit(全局) → Timeout(ctx) → AdminAuth

@@ -1,6 +1,6 @@
 # AGENTS 开发指南
 
-本文件为本项目（warden-stock-trading）的 AI 协作开发规范。任何前端或后端开发任务，都必须遵守以下约定。
+本文件为本项目（warden-stock-data）的 AI 协作开发规范。任何前端或后端开发任务，都必须遵守以下约定。
 
 ## 项目文档索引
 
@@ -58,6 +58,25 @@
 
 1. **PostgreSQL 数据持久化到本项目目录**：PostgreSQL 的数据目录 `/var/lib/postgresql/data` 必须通过 bind mount 持久化到**本项目内的目录**（如 `backend/deploy/pgdata`），不得使用项目外的宿主机路径或匿名卷，确保数据可随项目管理与查看。该数据目录须加入 `.gitignore`，禁止提交到仓库。
 2. **镜像名称自动加项目名前缀**：后端启动 Docker 服务时，构建出的镜像名称必须自动带上项目名前缀（前缀取当前项目名，如 `<project>-backend`）。通过在 `docker-compose.yml` 顶层设置 `name: <project>`（统一项目名与容器/网络前缀），并为自建服务显式指定 `image: <project>-<service>` 实现。
+
+### 后端运行模式约定（本地开发 vs 线上部署）
+
+后端 API **本地开发用本机 Go 直跑**，**线上部署走 Docker 镜像**。二者共用同一套代码与 `backend/.env.example` 环境变量契约，但启动方式与连接地址不同。
+
+| 维度 | 本地开发 | 线上 Docker 部署 |
+|------|----------|------------------|
+| Go 运行时 | 本机安装 **Go 1.26+**（版本与 `backend/go.mod` 一致） | 多阶段 `Dockerfile` 构建，运行 Alpine 镜像 |
+| 后端进程 | `cd backend && make run`（等价 `go run ./cmd/server`） | `docker compose up -d backend`（或 CI/CD 构建后发布） |
+| 基础设施 | **仅** PostgreSQL、Redis 走 Docker：`cd backend/deploy && docker compose up -d postgres redis` | `postgres`、`redis`、`backend` 均由 compose 编排 |
+| 数据库/缓存地址 | `.env` 中 `PG_HOST=localhost`、`REDIS_HOST=localhost` | compose 环境变量中 `PG_HOST=postgres`、`REDIS_HOST=redis`（容器服务名） |
+| 配置注入 | 复制 `backend/.env.example` → `backend/.env`；`make run` 自动加载；Docker 经 `env_file: ../.env` 注入（`PG_HOST`/`REDIS_HOST` 由 compose 覆盖为服务名） | `backend/deploy/deploy.sh` 一键部署，读取同一份 `backend/.env` |
+| 行情源 | `MARKET_PROVIDER=gotdx`（唯一行情源） | 同左 |
+| 代码热更新 | 改代码后直接重启 `make run`，**无需**重建 backend 镜像 | 服务器 `git pull` 后执行 `backend/deploy/deploy.sh` |
+| 依赖下载 | 本机 `go mod tidy`；国内网络可设 `GOPROXY=https://goproxy.cn,direct` | 构建阶段在 `Dockerfile` 内 `go mod download` |
+
+**禁止**：本地日常开发把 backend 放进 Docker 反复构建（慢、无必要）；**禁止**：线上直接把 `go run` 当生产进程（缺少镜像隔离与可复现构建）。
+
+常用 Makefile 目标（`backend/Makefile`）：`make test`（单测）、`make build`（产出 `bin/warden-server`）、`make run`（开发启动）、`make backfill`（历史回补 CLI）、`make tidy`（整理依赖）。
 
 ---
 
