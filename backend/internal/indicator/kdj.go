@@ -17,8 +17,12 @@ func init() {
 	Register(kdjComponent{typ: "kdj_j", part: "j"})
 }
 
-// kdjSeries 返回最后一根的 K / D / J 值。
-func kdjSeries(bars []Bar) (k, d, j decimal.Decimal) {
+// kdjSeriesAll 流式计算全序列 K/D/J，O(n)；单根窗口用滑动高低价。
+func kdjSeriesAll(bars []Bar) (k, d, j []decimal.Decimal) {
+	n := len(bars)
+	k = make([]decimal.Decimal, n)
+	d = make([]decimal.Decimal, n)
+	j = make([]decimal.Decimal, n)
 	hundred := decimal.NewFromInt(100)
 	prevK := decimal.NewFromInt(50)
 	prevD := decimal.NewFromInt(50)
@@ -29,12 +33,12 @@ func kdjSeries(bars []Bar) (k, d, j decimal.Decimal) {
 		if i >= kdjN-1 {
 			high := bars[i].High
 			low := bars[i].Low
-			for n := i - kdjN + 1; n <= i; n++ {
-				if bars[n].High.GreaterThan(high) {
-					high = bars[n].High
+			for idx := i - kdjN + 1; idx <= i; idx++ {
+				if bars[idx].High.GreaterThan(high) {
+					high = bars[idx].High
 				}
-				if bars[n].Low.LessThan(low) {
-					low = bars[n].Low
+				if bars[idx].Low.LessThan(low) {
+					low = bars[idx].Low
 				}
 			}
 			rng := high.Sub(low)
@@ -44,9 +48,21 @@ func kdjSeries(bars []Bar) (k, d, j decimal.Decimal) {
 		}
 		prevK = prevK.Mul(kw.Sub(decimal.NewFromInt(1))).Add(rsv).Div(kw)
 		prevD = prevD.Mul(dw.Sub(decimal.NewFromInt(1))).Add(prevK).Div(dw)
+		k[i] = prevK
+		d[i] = prevD
+		j[i] = prevK.Mul(decimal.NewFromInt(3)).Sub(prevD.Mul(decimal.NewFromInt(2)))
 	}
-	j = prevK.Mul(decimal.NewFromInt(3)).Sub(prevD.Mul(decimal.NewFromInt(2)))
-	return prevK, prevD, j
+	return k, d, j
+}
+
+// kdjSeries 返回最后一根的 K / D / J 值。
+func kdjSeries(bars []Bar) (kVal, dVal, jVal decimal.Decimal) {
+	k, d, j := kdjSeriesAll(bars)
+	if len(bars) == 0 {
+		return decimal.Zero, decimal.Zero, decimal.Zero
+	}
+	last := len(bars) - 1
+	return k[last], d[last], j[last]
 }
 
 type kdjComponent struct {

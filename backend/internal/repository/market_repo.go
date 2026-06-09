@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/warden-stock/warden-stock-data/internal/indicator"
 	"github.com/warden-stock/warden-stock-data/internal/model"
 )
 
@@ -150,8 +150,30 @@ type IndicatorRepository struct{ db *gorm.DB }
 
 func NewIndicatorRepository(db *gorm.DB) *IndicatorRepository { return &IndicatorRepository{db: db} }
 
+// UpsertSnapshotBatch 批量写入指标快照，减少全量回补时的 DB 往返。
+func (r *IndicatorRepository) UpsertSnapshotBatch(ctx context.Context, market, code string, rows []model.StockIndicatorSnapshot) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now()
+	for i := range rows {
+		rows[i].Market = market
+		rows[i].StockCode = code
+		if rows[i].UpdatedAt.IsZero() {
+			rows[i].UpdatedAt = now
+		}
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "market"}, {Name: "stock_code"}, {Name: "trade_date"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"values":     gorm.Expr(`COALESCE(stock_indicator_snapshots."values", '{}'::jsonb) || excluded."values"`),
+			"updated_at": now,
+		}),
+	}).CreateInBatches(rows, 200).Error
+}
+
 func (r *IndicatorRepository) UpsertSnapshot(ctx context.Context, market, code string, tradeDate time.Time, values map[string]decimal.Decimal) error {
-	b, err := json.Marshal(values)
+	b, err := indicator.SnapshotValuesJSON(values)
 	if err != nil {
 		return err
 	}

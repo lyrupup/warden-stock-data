@@ -231,3 +231,11 @@ func (s *IndicatorService) WriteSnapshot(ctx context.Context, code string, trade
 	}
 	return s.indiRepo.UpsertSnapshot(ctx, s.market, code, tradeDate, vals)
 }
+
+// WriteSnapshotBatch 批量落库指标快照。
+func (s *IndicatorService) WriteSnapshotBatch(ctx context.Context, code string, snaps []model.StockIndicatorSnapshot) error {
+	if s.indiRepo == nil || len(snaps) == 0 {
+		return nil
+	}
+	return s.indiRepo.UpsertSnapshotBatch(ctx, s.market, code, snaps)
+}

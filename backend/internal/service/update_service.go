@@ -6,9 +6,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"github.com/warden-stock/warden-stock-data/internal/indicator"
 	"github.com/warden-stock/warden-stock-data/internal/integration/market"
 	"github.com/warden-stock/warden-stock-data/internal/model"
+	"gorm.io/datatypes"
 	"github.com/warden-stock/warden-stock-data/internal/repository"
 )
 
@@ -189,6 +191,9 @@ func (s *UpdateService) BackfillIndicators(ctx context.Context, code string, typ
 	if len(types) == 0 {
 		types = defaultSnapshotTypes
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	bars, err := s.klineRepo.List(ctx, s.market, code, "qfq", nil, nil, 0)
 	if err != nil {
 		return err
@@ -199,15 +204,42 @@ func (s *UpdateService) BackfillIndicators(ctx context.Context, code string, typ
 		}
 		return ErrNoKline
 	}
-	for i := range bars {
-		series := klinesToSeries(bars[:i+1])
-		vals, err := indicator.ComputeAll(series, types)
-		if err != nil {
-			continue
+	series := klinesToSeries(bars)
+
+	const batchSize = 500
+	pending := make([]model.StockIndicatorSnapshot, 0, batchSize)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
 		}
-		_ = s.indiSvc.WriteSnapshot(ctx, code, bars[i].TradeDate, vals)
+		if err := s.indiSvc.WriteSnapshotBatch(ctx, code, pending); err != nil {
+			return err
+		}
+		pending = pending[:0]
+		return nil
 	}
-	return nil
+
+	err = indicator.StreamSnapshotSeries(ctx, series, types, func(i int, vals map[string]decimal.Decimal) error {
+		if len(vals) == 0 {
+			return nil
+		}
+		b, err := indicator.SnapshotValuesJSON(vals)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, model.StockIndicatorSnapshot{
+			TradeDate: bars[i].TradeDate,
+			Values:    datatypes.JSON(b),
+		})
+		if len(pending) >= batchSize {
+			return flush()
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return flush()
 }
 
 func (s *UpdateService) loadBars(ctx context.Context, code string, limit int) ([]model.StockDailyKline, error) {
