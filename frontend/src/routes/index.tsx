@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { ApiDocsPage } from "@/features/api-docs";
 import { LoginPage } from "@/features/auth";
 import { CredentialDetailPage, CredentialsPage } from "@/features/credentials";
 import {
@@ -47,6 +48,7 @@ export const AppRouter = () => (
         <Route path="market/quote/:code" element={<StockQuoteDetailPage />} />
         <Route path="ops/datasources" element={<DatasourcesPage />} />
         <Route path="ops/jobs" element={<JobsPage />} />
+        <Route path="api-docs" element={<ApiDocsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

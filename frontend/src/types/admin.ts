@@ -61,6 +61,8 @@ export type TSourceStatsResult = {
 
 export type TJobType =
   | "securities"
+  | "calendar"
+  | "factors"
   | "full"
   | "incremental"
   | "indicator_full"
