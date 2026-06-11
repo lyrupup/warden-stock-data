@@ -1,3 +1,6 @@
+# 守望者行情数据服务 · 统一部署编排
+# 一次性以 Docker 部署：postgres + redis 基建 + go（对外 API）+ python（采集/指标，仅内网）。
+# 统一项目名前缀：镜像 / 容器 / 网络均以 warden_stock_data 为前缀。
 name: warden_stock_data
 
 services:
@@ -10,27 +13,53 @@ services:
     ports:
       - "${PG_PORT:-5432}:5432"
     volumes:
+      # 数据持久化到本项目目录（已 .gitignore），首次建库执行 init.sql
       - ./pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-postgres} -d ${PG_DB:-warden_data}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
     ports:
       - "${REDIS_PORT:-6379}:6379"
 
+  # Python 采集 + 指标服务：仅内网，不映射宿主端口，由 go 经 http://quant:8000 调用
+  quant:
+    image: warden_stock_data-quant:latest
+    build:
+      context: ../python
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      PG_HOST: postgres
+
+  # Go 对外 API 服务
   backend:
     image: warden_stock_data-backend:latest
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: ../go
+      dockerfile: Dockerfile
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      quant:
+        condition: service_started
     env_file:
       - ../.env
     environment:
       # 容器网络内使用 compose 服务名，覆盖 .env 中的 localhost
       PG_HOST: postgres
       REDIS_HOST: redis
+      QUANT_BASE_URL: http://quant:8000
     ports:
       - "${APP_PORT:-8080}:${APP_PORT:-8080}"

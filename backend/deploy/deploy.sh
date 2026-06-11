@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 线上 Docker 一键部署：git pull 后在服务器执行
 #   cd backend/deploy && ./deploy.sh
+# 一次性部署：postgres + redis + quant(python) + backend(go)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,10 +26,10 @@ echo "[deploy] APP_ENV=${APP_ENV:-unknown}  MARKET_PROVIDER=${MARKET_PROVIDER:-u
 
 cd "${SCRIPT_DIR}"
 
-echo "[deploy] 构建 backend 镜像..."
-docker compose --env-file "${ENV_FILE}" build backend
+echo "[deploy] 构建 backend(go) / quant(python) 镜像..."
+docker compose --env-file "${ENV_FILE}" build backend quant
 
-echo "[deploy] 启动全部服务 (postgres / redis / backend)..."
+echo "[deploy] 启动全部服务 (postgres / redis / quant / backend)..."
 docker compose --env-file "${ENV_FILE}" up -d
 
 echo "[deploy] 等待 backend 健康检查 (http://localhost:${APP_PORT}/health)..."
