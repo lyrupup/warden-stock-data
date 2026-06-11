@@ -110,6 +110,7 @@ features/credentials/
 | `ky` | HTTP 请求 | `core/http-client/` |
 | `react-hook-form` / `zod` / `@hookform/resolvers` | 表单与校验 | `features/*` |
 | `lightweight-charts` | K 线 + 均线图 | `features/market` |
+| `react-markdown` / `remark-gfm` | 渲染开放 API 接入文档（GFM 表格 / 代码块） | `features/api-docs` |
 | `i18next` / `react-i18next` | 国际化 | `core/i18n/` |
 | `dayjs` | 日期 / 交易日 | `lib/` |
 | `vitest` / `@testing-library/react` / `msw` | 测试 | 工程 |
@@ -203,10 +204,18 @@ interface IAuthState {
 | `/market/quote/:code` | 个股行情详情（快照 + 分时 + 做 T 研判 + K 线 + 均线 + 指标） | M6 / M7 | 需登录 |
 | `/ops/datasources` | 数据源管理与健康 | M1/M6 | 需登录 |
 | `/ops/jobs` | 更新作业配置与执行记录 | M2/M6 | 需登录 |
+| `/api-docs` | 开放 API 接入文档（渲染 `docs/API_GUIDE.md`） | M4 | 需登录 |
 
 ### 5.2 全局布局
 
-左侧导航（概览 / 凭证 / 行情 / 运维）+ 顶栏（主题切换、管理员菜单、登出）。登录守卫：无 token 重定向 `/login`。
+左侧导航（概览 / 凭证 / 行情 / 运维）+ 顶栏（**API 文档入口**、主题切换、管理员菜单、登出）。登录守卫：无 token 重定向 `/login`。顶栏右上角的「API 文档」按钮跳转 `/api-docs`，首页（概览）等所有页面均可访问。
+
+### 5.3 开放 API 接入文档页（features/api-docs）
+
+- **来源同步**：第三方接入说明的单一事实源为 [`API_GUIDE.md`](./API_GUIDE.md)。前端通过 `scripts/sync-docs.mjs` 在启动/构建前（`package.json` 的 `predev` / `prebuild` 钩子调用 `npm run sync:docs`）把它复制到 `frontend/public/api-guide.md`（已 `.gitignore`，不提交）。
+- **渲染**：`ApiDocsPage` 运行时 `fetch(${BASE_URL}api-guide.md)`（TanStack Query 缓存），用 `react-markdown` + `remark-gfm` 渲染（支持 GFM 表格 / 代码块），并以 Tailwind 自定义 `components` 映射统一排版样式（标题 / 列表 / 表格 / 代码块等）。
+- **入口**：全局顶栏右上角「API 文档」按钮（`app-layout.tsx`，`BookOpen` 图标）跳转 `/api-docs`。
+- **依赖**：`react-markdown`、`remark-gfm`。
 
 ---
 

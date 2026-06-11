@@ -174,12 +174,16 @@ npm run dev             # http://localhost:5173
 | 个股行情 | `/market/quote` |
 | 数据源 | `/ops/datasources` |
 | 更新作业 | `/ops/jobs` |
+| 开放 API 接入文档 | `/api-docs`（首页右上角「API 文档」入口） |
+
+> 启动前端会自动执行 `npm run sync:docs`（`predev`/`prebuild` 钩子），把 [`docs/API_GUIDE.md`](docs/API_GUIDE.md) 复制到 `frontend/public/api-guide.md`，由 `/api-docs` 页面运行时渲染。
 
 ---
 
 ## 📚 文档
 
 - 产品需求文档（PRD，按 M1~M6 模块）：[`docs/PRD.md`](docs/PRD.md)
+- **开放 API 接入说明（第三方接入指南：secretKey 使用 + 开放接口）**：[`docs/API_GUIDE.md`](docs/API_GUIDE.md)
 - 后端技术开发文档（数据库 / API / TDD / 数据源 / 调度 / HMAC）：[`docs/BACKEND.md`](docs/BACKEND.md)
 - **Python quant 服务文档（采集 + 指标计算）**：[`docs/PYTHON_SERVICE.md`](docs/PYTHON_SERVICE.md)
 - 行情数据链路（K 线 / 分时 / 采集 / 指标）：[`docs/MARKET_DATA.md`](docs/MARKET_DATA.md)
