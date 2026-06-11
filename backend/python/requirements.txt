@@ -1,0 +1,23 @@
+# Python quant 服务依赖（采集 + 指标计算）
+# Python 3.12+
+
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.9
+pydantic-settings>=2.6
+
+# 数据源
+baostock>=0.8.9
+
+# 数据处理与指标（核心指标在 app/features/indicator/compute.py 用 pandas/numpy 实现，A 股口径对齐通达信）
+# 可选扩展：pandas-ta-classic>=0.6.20（需 Python 3.10+，未来接入 OBV/CCI/DMI 等长尾指标）
+pandas>=2.2
+numpy>=1.26
+
+# 数据库
+SQLAlchemy>=2.0.36
+psycopg[binary]>=3.2
+
+# 测试
+pytest>=8.3
+httpx>=0.28
