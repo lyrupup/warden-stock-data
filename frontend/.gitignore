@@ -13,6 +13,9 @@ dist
 dist-ssr
 *.local
 
+# 由 npm run sync:docs 从 docs/API_GUIDE.md 复制生成
+public/api-guide.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -2,6 +2,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   Activity,
   BarChart3,
+  BookOpen,
   Database,
   Key,
   LayoutDashboard,
@@ -11,7 +12,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useAuthStore } from "@/stores/auth-store";
@@ -113,6 +114,12 @@ export const AppLayout = () => {
             </span>
           </div>
           <div className="flex items-center gap-2 ml-auto">
+            <Button asChild variant="outline" size="sm" className="gap-1.5">
+              <Link to="/api-docs">
+                <BookOpen className="h-4 w-4" />
+                <span className="hidden sm:inline">API 文档</span>
+              </Link>
+            </Button>
             <span className="hidden text-sm text-muted-foreground sm:inline">
               {admin?.username ?? "管理员"}
             </span>
