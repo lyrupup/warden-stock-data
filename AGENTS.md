@@ -65,9 +65,9 @@
 
 | 维度 | 本地开发 | 线上 Docker 部署 |
 |------|----------|------------------|
-| Go 运行时 | 本机安装 **Go 1.26+**（版本与 `backend/go.mod` 一致） | 多阶段 `Dockerfile` 构建，运行 Alpine 镜像 |
-| 后端进程 | `cd backend && make run`（等价 `go run ./cmd/server`） | `docker compose up -d backend`（或 CI/CD 构建后发布） |
-| 基础设施 | **仅** PostgreSQL、Redis 走 Docker：`cd backend/deploy && docker compose up -d postgres redis` | `postgres`、`redis`、`backend` 均由 compose 编排 |
+| Go 运行时 | 本机安装 **Go 1.26+**（版本与 `backend/go/go.mod` 一致） | 多阶段 `Dockerfile` 构建，运行 Alpine 镜像 |
+| 后端进程 | `cd backend/go && make run`（等价 `go run ./cmd/server`）；Python：`cd backend/python && make run` | `docker compose up -d`（CI/CD 构建后发布） |
+| 基础设施 | **仅** PostgreSQL、Redis 走 Docker：`cd backend/deploy && docker compose up -d postgres redis` | `postgres`、`redis`、`quant`、`backend` 均由 compose 编排 |
 | 数据库/缓存地址 | `.env` 中 `PG_HOST=localhost`、`REDIS_HOST=localhost` | compose 环境变量中 `PG_HOST=postgres`、`REDIS_HOST=redis`（容器服务名） |
 | 配置注入 | 复制 `backend/.env.example` → `backend/.env`；`make run` 自动加载；Docker 经 `env_file: ../.env` 注入（`PG_HOST`/`REDIS_HOST` 由 compose 覆盖为服务名） | `backend/deploy/deploy.sh` 一键部署，读取同一份 `backend/.env` |
 | 行情源 | `MARKET_PROVIDER=gotdx`（唯一行情源） | 同左 |
@@ -76,7 +76,9 @@
 
 **禁止**：本地日常开发把 backend 放进 Docker 反复构建（慢、无必要）；**禁止**：线上直接把 `go run` 当生产进程（缺少镜像隔离与可复现构建）。
 
-常用 Makefile 目标（`backend/Makefile`）：`make test`（单测）、`make build`（产出 `bin/warden-server`）、`make run`（开发启动）、`make backfill`（历史回补 CLI）、`make tidy`（整理依赖）。
+目录结构：`backend/go`（Go 服务）、`backend/python`（Python quant 服务）、`backend/deploy`（统一 Docker 部署：pg + redis + quant + backend）；环境变量统一在 `backend/.env`，go 与 python 共用。
+
+常用 Makefile 目标（`backend/go/Makefile`）：`make test`（单测）、`make build`（产出 `bin/warden-server`）、`make run`（开发启动）、`make backfill`（历史回补 CLI）、`make tidy`（整理依赖）、`make infra-up`（起 pg+redis 容器）。Python（`backend/python/Makefile`）：`make run`、`make test`、`make install`。
 
 ---
 

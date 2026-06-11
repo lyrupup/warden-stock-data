@@ -14,18 +14,38 @@
 
 ---
 
+## 🏛️ 服务架构（Go + Python 双服务）
+
+本服务由两个后端服务协作，前端与外部接入方**只与 Go 服务通信**，Python 服务**不对外、仅由 Go 内网调用**：
+
+```
+前端 / 外部接入方 ──► Go 服务（对外唯一入口：鉴权/限流/K线直查/作业调度）
+                         │  gotdx ──► 分时 / 实时快照 / 指数
+                         │  内部 HTTP（仅 compose 内网 + X-Internal-Token）
+                         ▼
+                     Python quant 服务（不对外）
+                         · baostock 采集：日K / 复权因子 / 涨跌停（自算）/ ST / 停牌 / 退市 / 证券列表
+                         · pandas-ta 实时计算技术指标（不落库）
+                         ▼
+                     PostgreSQL（两服务共用）
+```
+
+- **K 线纯查询**（无指标）→ Go 直查 PostgreSQL，最快路径，不经 Python。
+- **指标 / 数据回补** → Go 转发 Python（指标实时算、采集 baostock 写库）。
+- Python 服务详见 [`docs/PYTHON_SERVICE.md`](docs/PYTHON_SERVICE.md)。
+
 ## 🧩 功能模块
 
 | 模块 | 能力 | 简介 |
 |------|------|------|
-| **M1** 数据源适配与多市场接入 | 适配器 | `IMarketProvider` 屏蔽数据源差异；A 股主力 **gotdx**（连接池 + 测速 + 字段映射）；`market` 维度抽象预留 H 股 / 美股；可插拔多源主备降级 |
-| **M2** 存储与增量更新调度 | 性能核心 | Redis 缓存 → Provider → 快照兜底；**五类更新作业**（证券列表同步 / 全量·增量日K数据回补 / 全量·增量日K技术数据回补，K 线拉取与指标计算解耦）；触发可选全量股票或指定多个代码；执行返回未成功代码清单便于单独补数；**盘后定时分批批量更新**（默认增量日K 17:00 + 增量指标 17:30 / 分批 20 / 并发 10，交易日历感知） |
-| **M3** 技术指标计算 | 量化因子 | 输出 **MA5/10/20/30/60**、**MACD/KDJ/RSI/BOLL/ATR**、中长期动量，迁移振幅/乖离/排列/量比等因子；指标接口可继续扩展 DMI/CCI/WR 等 |
-| **M4** 行情数据开放 API | 数据出口 | 纯只读：指数 / 快照 / K 线 / 分时 / 指标 / 搜索 / 元数据 |
+| **M1** 数据源适配与多市场接入 | 适配器 | Go 侧 `IMarketProvider`（**gotdx** 分时/快照/指数）+ Python 侧 **baostock**（日K/复权因子/ST/停牌/退市）；`market` 维度预留 H 股/美股 |
+| **M2** 存储与增量更新调度 | 性能核心 | **三类更新作业**（证券列表同步 / 全量日K回补 / 增量日K回补）；Go 调度编排（分批/并发/排队/失败码），实际采集由 Python baostock 执行；触发可选全量或指定代码；**盘后定时**（默认证券同步 8:30、增量日K 17:00 / 分批 20 / 并发 10，交易日历感知） |
+| **M3** 技术指标计算 | 量化因子 | 由 **Python quant 服务**用 pandas-ta **实时计算**：MA5~60、MACD/KDJ/RSI/BOLL/ATR、中长期动量、迁移因子；**不再落库指标快照**；Go 转发请求 |
+| **M4** 行情数据开放 API | 数据出口 | 纯只读：指数 / 快照 / K 线（含涨跌停/停牌/ST/复权因子）/ 分时 / 指标 / 搜索 / 元数据 |
 | **M5** 鉴权与凭证管理 | 安全网关 | 管理员 JWT + 接入方 **secretId/secretKey（HMAC 签名）**；接入方 scope 固定只读 |
 | **M6** Web 管理后台 | 运营界面 | 管理员登录、凭证分发（secretKey 一次性展示）、行情展示、数据源 / 作业管理 |
 
-> 本服务**不面向 C 端用户**，只生产与开放**公共行情数据**。接入方通过 secretId/secretKey **只读消费**，无任何数据更新权限。
+> 本服务**不面向 C 端用户**，只生产与开放**公共行情数据**。接入方通过 secretId/secretKey **只读消费**，无任何数据更新权限。Python quant 服务不对外开放，仅由 Go 服务内网驱动。
 
 ---
 
@@ -50,12 +70,13 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 
 > 详见 PRD 第 7 章与 BACKEND.md，遵循项目 `AGENTS.md` 规范。
 
-- **后端**：Go + Gin + GORM；中间件含限流 / 超时（context）/ CORS / 日志 / 双鉴权（Admin JWT + HMAC 凭证）；TDD 测试先行。
-- **数据源**：`IMarketProvider` 适配器；A 股 gotdx（通达信，唯一行情源）；预留 Tushare / 港美股源。
-- **存储**：PostgreSQL（K 线 / 快照 / 指标快照 / 凭证 / 作业 / 交易日历）+ Redis（缓存 / 限流 / 配额 / nonce）。
-- **调度**：robfig/cron，盘后定时分批增量更新，交易日历感知。
+- **Go 服务**：Go + Gin + GORM；对外唯一入口；中间件含限流 / 超时（context）/ CORS / 日志 / 双鉴权（Admin JWT + HMAC 凭证）；K 线直查、作业调度编排、指标/采集转发 Python；TDD 测试先行。
+- **Python quant 服务**：FastAPI + uvicorn + **baostock**（采集日K/复权因子/ST/停牌/退市）+ **pandas-ta-classic**（实时指标）；仅内网、由 Go 经 `X-Internal-Token` 调用。
+- **数据源**：分时/快照/指数走 gotdx（Go）；日K及元数据走 baostock（Python，免费免注册）；涨跌停价按板块/ST 规则**自算**。
+- **存储**：PostgreSQL（K 线含涨跌停/停牌/ST、复权因子、证券/退市、凭证 / 作业 / 交易日历）+ Redis（缓存 / 限流 / 配额 / nonce）。**指标不落库，实时计算**。
+- **调度**：robfig/cron（Go），盘后定时分批回补，交易日历感知；采集动作经 HTTP 驱动 Python。
 - **前端**：React + Vite + shadcn/ui + Tailwind CSS，ky + TanStack Query，zustand，lightweight-charts，Light/Dark 主题。
-- **部署**：Docker + docker-compose，配置经环境变量注入。
+- **部署**：Docker + docker-compose（postgres / redis / backend / quant），配置经环境变量注入；quant 不映射宿主端口。
 
 ---
 
@@ -63,31 +84,35 @@ StringToSign = METHOD\nPATH\nCanonicalQuery\nX-Secret-Id\nX-Timestamp\nX-Nonce\n
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| 盘后更新触发 | 增量日K `0 0 17 * * *`（17:00）、增量指标 `0 30 17 * * *`（17:30） | 仅交易日执行；全量回补类默认停用，按需手动触发 |
-| 分批大小 | 20 | 每批标的数 |
-| 并发度 | 10 | 批内并发，与 gotdx 连接池对齐 |
-| 首次历史回补 | 5 年 | 日 K 线全量回补 |
-| 全市场扫描默认指标 | MA5~MA60 + MACD/KDJ/RSI/BOLL/ATR + 动量 | 逐日落库，回测友好；其余长尾因子按需实时算 |
+| 盘后更新触发 | 证券同步 `0 30 8 * * *`（8:30）、增量日K `0 0 17 * * *`（17:00） | 仅交易日执行；全量回补默认停用，按需手动触发 |
+| 分批大小 | 20 | 每批标的数（Go 切批后逐批驱动 Python baostock 采集） |
+| 并发度 | 10 | 批内并发 |
+| 首次历史回补 | ≈5 年 | 日 K 线全量回补（baostock，`BACKFILL_START_DATE`） |
+| 技术指标 | 实时计算（Python pandas-ta） | **不落库**；按需 MA/MACD/KDJ/RSI/BOLL/ATR/动量等 |
+| 涨跌停价 | 按板块/ST 自算 | 主板10% / 创业·科创20% / 北交所30% / 主板ST 5% |
 | 开放 API 校验 | HMAC-SHA256 签名 | 时间戳 ±300s + nonce 防重放 |
 
 ---
 
-## 🚀 快速启动（后端）
+> 目录结构：`backend/go`（Go 服务）、`backend/python`（Python quant 服务）、`backend/deploy`（统一 Docker 部署）；环境变量统一在 `backend/.env`，三者共用。
+
+## 🚀 快速启动（Go 后端）
 
 ```bash
 cd backend
-cp .env.example .env   # 可按需修改（本地与 Docker 共用此文件）
-make infra-up          # 启动 postgres + redis
-make tidy && make run  # 自动加载 .env 并启动 API
+cp .env.example .env    # 统一环境变量（go / python / Docker 共用）
+cd go
+make infra-up           # 仅启动 postgres + redis 容器
+make tidy && make run   # 自动加载 ../.env 并启动 API
 
 curl http://localhost:8080/health
 ```
 
-**线上 Docker 一键部署**（服务器 `git pull` 后）：
+**线上 Docker 一键部署（全部服务）**（服务器 `git pull` 后）：
 
 ```bash
 cp backend/.env.example backend/.env   # 首次，填写生产配置
-cd backend/deploy && ./deploy.sh
+cd backend/deploy && ./deploy.sh       # 一次性部署 postgres + redis + python(quant) + go(backend)
 ```
 
 默认管理员：`admin` / `admin123`（可通过环境变量 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 覆盖）。
@@ -101,21 +126,31 @@ curl -s -X POST http://localhost:8080/admin/auth/login \
   -d '{"username":"admin","password":"admin123"}'
 ```
 
-后端目录结构与技术说明见 [`docs/BACKEND.md`](docs/BACKEND.md)；单元测试：`cd backend && make test`。
+后端目录结构与技术说明见 [`docs/BACKEND.md`](docs/BACKEND.md)；单元测试：`cd backend/go && make test`。
 
-使用真实 gotdx 行情源（需网络）：
-
-```bash
-cd backend && make build-gotdx
-MARKET_PROVIDER=gotdx ./bin/warden-server
-```
-
-历史 K 线 / 指标回补：
+构建二进制（gotdx 为唯一行情源）：
 
 ```bash
-cd backend && make backfill
-# 或指定标的：go run ./cmd/backfill -codes=600000,000001
+cd backend/go && make build
+./bin/warden-server
 ```
+
+历史 K 线回补由 **Python quant 服务**经 baostock 执行，通过 Go 管理后台「更新作业」触发（全量日K回补 / 增量日K回补），Go 负责分批/并发/进度编排。
+
+---
+
+## 🚀 快速启动（Python quant 服务）
+
+quant 服务（位于 `backend/python`）负责 baostock 采集与实时指标计算，**仅供 Go 内网调用**，本地绑定 `127.0.0.1:8000`。环境变量与 Go 共用 `backend/.env`，无需单独的 env 文件。
+
+```bash
+cd backend/python
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+make run                        # 读取 ../.env（与 go 共用），uvicorn 127.0.0.1:8000
+```
+
+Go 服务通过 `QUANT_BASE_URL`（默认 `http://127.0.0.1:8000`）+ `INTERNAL_TOKEN` 调用。PostgreSQL/Redis 仍由 `backend/go` 的 `make infra-up` 启动，两服务共用。详见 [`docs/PYTHON_SERVICE.md`](docs/PYTHON_SERVICE.md)。
 
 ---
 
@@ -146,6 +181,8 @@ npm run dev             # http://localhost:5173
 
 - 产品需求文档（PRD，按 M1~M6 模块）：[`docs/PRD.md`](docs/PRD.md)
 - 后端技术开发文档（数据库 / API / TDD / 数据源 / 调度 / HMAC）：[`docs/BACKEND.md`](docs/BACKEND.md)
+- **Python quant 服务文档（采集 + 指标计算）**：[`docs/PYTHON_SERVICE.md`](docs/PYTHON_SERVICE.md)
+- 行情数据链路（K 线 / 分时 / 采集 / 指标）：[`docs/MARKET_DATA.md`](docs/MARKET_DATA.md)
 - 前端技术开发文档（管理后台）：[`docs/FRONTEND.md`](docs/FRONTEND.md)
 - OpenAPI 接口定义（管理 API + 开放 API）：[`docs/openapi.yaml`](docs/openapi.yaml)
 
@@ -157,8 +194,9 @@ npm run dev             # http://localhost:5173
 |------|------|
 | V1.0 MVP | A 股行情中台闭环：gotdx 适配 + 增量/盘后调度/全市场扫描 + MA5~MA60 + 只读开放 API + 凭证管理 + 管理后台 |
 | V1.1 | HMAC 签名增强、凭证审计与告警、作业可观测增强 |
-| V1.2 | ✅ KDJ/MACD/RSI/BOLL/ATR 指标扩展（已落地，逐日快照预计算，供量化策略/回测）|
-| V2.0 | H 股 / 美股接入、分市场调度、多源对账 |
+| V1.2 | KDJ/MACD/RSI/BOLL/ATR 指标扩展（量化策略/回测）|
+| V1.3 | ✅ **双服务重构**：新增 Python quant 服务（baostock 采集日K/复权因子/涨跌停/ST/停牌/退市 + pandas-ta 实时指标）；Go 专注对外 API/鉴权/K线直查/作业调度；指标快照落库下线 |
+| V2.0 | H 股 / 美股接入、分市场调度、多源对账；Python 内置回测引擎 |
 
 ---
 

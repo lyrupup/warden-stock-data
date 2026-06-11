@@ -9,6 +9,26 @@
 
 ---
 
+> ## 🆕 v3 增量提速（2026-06，权威，优先级高于 v2）
+>
+> v2 把增量日 K 也交给 baostock，逐只串行导致全市场单日增量约 5.5h。v3 重切增量/刷新职责：
+> - **`incremental` 改回 gotdx 且 Go 原生写库**：`JobRunner.runIncrementalKline`（`job_runner_incremental.go`）`concurrency` 个 goroutine 并发走 gotdx 连接池，`UpdateService.IncrementalKlineGotdx` 逐只落库；全市场单日增量**约 1 分钟**（实测 5207 只 ≈ 48s）。gotdx 日 K 自带昨收/成交额/涨跌幅，Go 侧补全**涨跌停价**（`internal/service/limit_price.go`，与 Python 同口径）、**ST**（取 `securities` 表）、**停牌**（量=0），以 `adjust=qfq`/`source=gotdx` UPSERT 续接序列并推进水位、补登日历。不再经 Python。
+>   - 口径：gotdx 为不复权价，作「最新一日」追加到 qfq 序列；`turnover_rate` gotdx 不可靠（多为 0）；跨除权历史连续性由 `factors`/`full`（baostock）周级修正。
+> - **新增 `factors`（周级 baostock 对齐）**：`runWeeklyAlign` 先 baostock 刷新证券列表（ST/退市/新股），再按区间批量调 `UpdateService.CollectKlineBatch(..., "full", from, to, nil)`（→ Python `/internal/v1/collect/kline`）用 baostock 重拉该区间日 K，**覆盖 gotdx 行并把 `source` 翻为 `baostock`**，同趟刷复权因子。区间可选：用户/定时未指定时由 `UpdateService.RecentTradingRange` 缺省取「最近 7 个交易日」（查 `trading_calendars`，当天为交易日则含当天；无日历时按工作日回退）。`batch_size` 合批、`concurrency` 控在途批次；默认作业 `stock-weekly-refresh`（周六 05:00，启用）。
+> - `full`/`securities`/`calendar` 不变。`EnsureDefaults` 默认作业新增 `stock-weekly-refresh`。
+>
+> ## v2 架构升级（Go + Python 双服务，2026-06）
+>
+> 本文档描述 **Go 服务**；新增的 **Python quant 服务**（baostock 采集 + pandas-ta 实时指标）详见 [`PYTHON_SERVICE.md`](./PYTHON_SERVICE.md)。Go 侧关键变更：
+> - **数据源分工**：分时/快照/指数仍走 gotdx（Go `IMarketProvider`）；**日 K / 复权因子 / 涨跌停 / ST / 停牌 / 退市 / 证券列表改由 Python baostock 采集**。Go 通过 `QuantClient`（内部 HTTP + `X-Internal-Token`）驱动采集与指标计算。
+> - **指标实时化**：删除 `internal/indicator` 计算引擎与 `stock_indicator_snapshots` 落库；指标统一转发 Python 实时计算（`/open/v1/.../indicators`、K 线带 `indicators`、`/open/v1/meta` 目录）。
+> - **作业类型**：两类轻量元数据作业 `securities` / `calendar`（经 Python baostock 同步证券列表与官方交易日历）+ 两类 K 线作业 `full` / `incremental`（删除 `indicator_full`/`indicator_incremental`）；日 K 采集改为"调 Python `QuantClient`"。`JobRunner` 改为**合批调用**：`batch_size` 只代码一次 HTTP 整批交给 Python（baostock 端串行），`concurrency` 控制在途批次 HTTP 数；增量按各自水位 `from` 分组合批。另提供 Python 离线 CLI（`app.scripts.backfill`）直写库做首次全量回补的最快路径。
+> - **K 线纯查询**（无 `indicators` 参数）→ Go 直查 PostgreSQL，不经 Python（最快路径）。
+> - **数据库**：`stock_daily_klines` 扩列（pre_close/turnover_rate/pct_chg/limit_up/limit_down/trade_status/is_st），新增 `stock_adjust_factors`，`securities` 扩列（list_date/delist_date/is_st），删除 `stock_indicator_snapshots`。**以 `deploy/init.sql` 为准**。
+> - **新增配置**：`QUANT_BASE_URL`、`INTERNAL_TOKEN`。
+
+---
+
 ## 1. 技术栈与架构
 
 ### 1.1 技术栈
@@ -54,29 +74,41 @@
 ### 1.3 目录结构
 
 ```
-backend/
-├── cmd/
-│   ├── server/main.go         # HTTP 服务入口（装配路由 + 启动调度器）
-│   └── backfill/main.go       # 一次性历史 K 线回补 CLI（首次 5 年回补）
-├── internal/
-│   ├── handler/               # admin/(后台) open/(开放API) 两组 handler
-│   ├── service/               # market quote kline indicator credential job admin
-│   ├── repository/            # kline quote indicator credential job calendar security
-│   ├── model/                 # GORM 模型
-│   ├── dto/                   # request/ response/
-│   ├── middleware/            # adminauth hmacauth ratelimit quota timeout logger cors recovery
-│   ├── integration/
-│   │   └── market/            # provider.go(接口) gotdx_*.go factory.go
-│   ├── indicator/             # indicator.go(接口+注册) ma.go 迁移因子 catalog.go
-│   ├── scheduler/             # cron.go job_runner.go(分批/限速/续跑)
-│   ├── mock/                  # mockgen 生成
-│   └── router/router.go
-├── pkg/
-│   ├── errcode/ response/ database/ cache/ crypto/ signature/(HMAC) utils/
-├── config/config.yaml
-├── deploy/{docker-compose.yml,Dockerfile,init.sql}
-├── test/                      # 集成测试
-└── go.mod
+backend/                       # 后端总目录（go / python 服务 + 统一部署）
+├── .env / .env.example        # 统一环境变量（go / python / Docker 共用）
+├── go/                        # Go 对外 API 服务
+│   ├── cmd/
+│   │   ├── server/main.go     # HTTP 服务入口（装配路由 + 启动调度器）
+│   │   └── backfill/main.go   # 一次性历史 K 线回补 CLI（首次 5 年回补）
+│   ├── internal/
+│   │   ├── handler/           # admin/(后台) open/(开放API) 两组 handler
+│   │   ├── service/           # market quote kline indicator credential job admin
+│   │   ├── repository/        # kline quote credential job calendar security
+│   │   ├── model/             # GORM 模型
+│   │   ├── dto/               # request/ response/
+│   │   ├── middleware/        # adminauth hmacauth ratelimit quota timeout logger cors recovery
+│   │   ├── integration/
+│   │   │   ├── market/        # provider.go(接口) gotdx_*.go factory.go（分时/快照/指数）
+│   │   │   └── quant/         # client.go：调用 Python quant 内部 HTTP（X-Internal-Token）
+│   │   ├── scheduler/         # cron.go job_runner.go(分批/限速/续跑)
+│   │   ├── mock/              # mockgen 生成
+│   │   └── router/router.go
+│   ├── pkg/                   # errcode response database cache crypto signature(HMAC) utils
+│   ├── config/config.yaml
+│   ├── Dockerfile            # Go 服务镜像（golang:1.26-alpine → alpine:3.20）
+│   ├── Makefile
+│   └── go.mod
+├── python/                    # Python quant 服务（baostock 采集 + 实时指标，仅内网）
+│   ├── app/{core,models,schemas,features}/
+│   ├── tests/
+│   ├── Dockerfile            # python:3.12-slim
+│   ├── Makefile
+│   └── requirements.txt
+└── deploy/                    # 统一 Docker 部署（一次性起全部服务）
+    ├── docker-compose.yml    # postgres + redis + quant(python) + backend(go)
+    ├── init.sql              # 建库 DDL（首次启库执行）
+    ├── deploy.sh             # 一键部署脚本
+    └── pgdata/               # PG 数据持久化（.gitignore）
 ```
 
 > 遵循 `AGENTS.md`：`core` 可移植模块（indicator / signature / cache）与 `features` 业务解耦；具名导出；接口前缀 `I`。
@@ -197,7 +229,7 @@ adminAuthed.GET/POST/PUT/DELETE(...)    // 写操作全部在此
 公共行情（按 market/source 维度，无 user_id）
   data_sources                              数据源配置
   securities (market,code,name,status)      证券列表
-  trading_calendars (market,date,is_open)   交易日历（自维护 + 反推校正）
+  trading_calendars (market,date,is_open)   交易日历（baostock 官方日历为主 + K 线反推兜底）
   index_quotes / stock_quotes               实时快照（兜底降级）
   stock_daily_klines (market,code,date,OHLCV,adjust)  日 K 线序列
   stock_indicator_snapshots (market,code,date,values JSONB)  指标快照（全市场扫描底座）
@@ -245,13 +277,13 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS idx_securities_code_trgm ON securities USING gin (code gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_securities_name_trgm ON securities USING gin (name gin_trgm_ops);
 
--- 交易日历（自维护 + gotdx K 线日期反推校正）
+-- 交易日历（baostock 官方日历 query_trade_dates 为主 + K 线日期反推兜底）
 CREATE TABLE IF NOT EXISTS trading_calendars (
     id BIGSERIAL PRIMARY KEY,
     market VARCHAR(8) NOT NULL DEFAULT 'CN',
     cal_date DATE NOT NULL,
     is_open BOOLEAN NOT NULL DEFAULT FALSE, -- 是否交易日
-    source VARCHAR(16) NOT NULL DEFAULT 'manual', -- manual / inferred
+    source VARCHAR(16) NOT NULL DEFAULT 'manual', -- baostock(官方日历) / inferred(K线反推) / manual
     CONSTRAINT uni_trading_calendars_market_date UNIQUE (market, cal_date)
 );
 CREATE INDEX IF NOT EXISTS idx_trading_calendars_market_open ON trading_calendars(market, is_open);
@@ -571,11 +603,11 @@ func (p *GotdxProvider) Close() error
 > **作业类型（五类，K 线拉取与指标计算解耦）**：由 `JobRunner.runOne` 按 `job_type` 分发，职责单一：
 > - `securities` 证券列表同步：调一次 `SyncSecuritiesList` 发现新股/改名，几秒完成，不触达 K 线接口；
 > - `full` 全量日K数据回补：`SyncKlineFull` 经 `provider.KlineFull` **分页拉取**数据源全部历史日 K 并**整体覆盖**落库（已有日期一并 UPSERT 覆盖），推进水位，不算指标；
-> - `incremental` 增量日K数据回补：`IncrementalOne` 落库「水位日及之后」的日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位，不算指标；
+> - `incremental` 增量日K数据回补：落库「水位日及之后」的日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位，不算指标；未指定 codes/区间时 `PendingCodes` 预筛以**行情源最新交易日**为基准挑落后标的（避免全量回补后库内最新==各水位导致的空跑）；手动触发支持 `from_date`/`to_date` 回补区间（指定后对全部目标代码按区间统一回补、跳过预筛，可精确拉取最新一个交易日）；
 > - `indicator_full` 全量日K技术数据回补：`BackfillIndicators` 基于库内全量日 K **逐日重算**全部指标快照（全量覆盖）；
 > - `indicator_incremental` 增量日K技术数据回补：`ScanIndicators` 基于库内日 K 计算**最新一日**指标快照（覆盖）。
 >
-> 旧值 `snapshot`/`indicator` 兼容映射到 `indicator_incremental`。指标类作业遇标的无可用日 K（`ErrNoKline`）计为失败，提示先回补日 K。盘后链路：增量日K(17:00) → 增量指标(17:30)；全量回补类开销大，`EnsureDefaults` 默认**停用**。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`securities-sync` 8:30、`daily-incremental` 17:00、`daily-indicator-incremental` 17:30、`kline-full-backfill` 周六 4:00（停用）、`indicator-full-backfill` 周六 6:00（停用）），存量库也会自动补上后加入的默认作业。
+> 旧值 `snapshot`/`indicator` 兼容映射到 `indicator_incremental`。指标类作业遇标的无可用日 K（`ErrNoKline`）计为失败，提示先回补日 K。盘后链路：增量日K(17:00) → 增量指标(17:30)；全量回补类开销大，`EnsureDefaults` 默认**停用**。默认作业由 `EnsureDefaults` 按 `(job_type, market)` 幂等补建（`securities-sync` 8:30、`calendar-sync` 每月 1 日 8:00、`daily-incremental` 17:00、`kline-full-backfill` 周六 4:00（停用）），存量库也会自动补上后加入的默认作业（含 `calendar-sync`）。
 
 > **触发范围与失败代码补数**：手动触发 `POST /admin/jobs/{id}/run` 支持 `codes`：留空=全量股票（按证券列表），传入=仅处理这些代码（便于个别股票单独补数）。每次执行把未成功/未完整处理的标的代码收集进 `update_job_runs.failed_codes`（逗号分隔，超 500 个截断并附计数），管理后台据此可「查看未成功代码 → 复制 / 一键仅重跑这些代码」。**无行情/未上市识别**：当数据源对某标的「既无历史日 K、又无有效实时快照（量价全 0）」时，返回 `ErrNoMarketData`，计入 `skipped`/`skipped_codes`（不计入失败），便于与真正拉取失败区分。
 
@@ -604,16 +636,17 @@ func (s *scanService) backfillIndicators(code string, bars []model.Kline) {
 // internal/scheduler/cron.go
 c := cron.New(cron.WithSeconds())
 c.AddFunc(job.CronExpr /*默认 "0 0 17 * * *"*/, func() {
-    if !calendar.IsTradingDay(today) { return }   // 交易日历感知，非交易日跳过
+    if isKlineJob(job) && !calendar.IsTradingDay(today) { return } // 交易日感知仅作用于 K 线作业
     runner.RunIncremental(ctx, job)               // 分批 batch=20、并发=10、限速
 })
 ```
 
-  - **分批 + 限速**：把全市场代码切成 `batch_size=20` 一批，批间 sleep 限速，批内 `concurrency=10` 并发，规避数据源限频/封禁。
+  - **合批 + 并发（v2 语义）**：日 K 经 Python `QuantClient` 采集，`JobRunner` 把代码切成 **`batch_size`（默认 20）只一批，一次 HTTP 整批交给 Python**（baostock 在 Python 端串行处理整批），`concurrency`（默认 10）控制**同时在途的批次 HTTP 数**。注意 baostock 客户端在单个 quant 进程内全局串行，因此单 worker 下并发批次会在 Python 锁内排队；只有 quant 多进程（uvicorn `--workers` / 多实例）时 `concurrency` 才带来真正并行。增量模式下批内按各自水位 `from` 自动分组合批（稳态通常 1~2 组）。
+  - **离线批量回补（最快路径）**：首次全量历史回补建议走 Python 离线 CLI `python -m app.scripts.backfill`（`backend/python` 下 `make backfill ARGS="--all"`），直接在 quant 进程内调用采集逻辑写库、绕过 Go/HTTP 编排，并写 `update_watermarks`；支持 `--shard i/n` 多进程分片并行（每进程独立 baostock 会话）与 `--skip-done` 断点续跑。详见 `docs/PYTHON_SERVICE.md`。
   - **断点续跑**：`update_job_runs.processed` 记进度，失败批重试；进程重启可从 watermark 续跑（天然幂等：upsert + 水位）。
   - **同类型排队（FIFO）**：手动触发 / 定时触发统一走 `JobRunner.Submit`。若同 `job_type` 已有 `running`，新作业落 `status=waiting` 入队而非并行启动；当前作业终态后 `promoteNext` 自动提升队首 waiting 执行。`waiting` 作业可被用户取消（无执行 goroutine，直接置 `canceled`）。`update_job_runs` 增加 `job_type`/`market` 字段以支撑队列定位与接力执行。
   - **启动恢复**：进程启动先把残留 `running` 置 `failed`（孤儿清理），再对存在 `waiting` 的每个类型 `ResumeWaiting` 提升队首，避免重启后队列卡死。
-- **交易日历**：自维护表为主（按年导入交易所休市安排），每次增量更新用「实际拉到的 K 线最大日期」反推校正 `trading_calendars`（`source='inferred'`），补漏临时休市。
+- **交易日历**：以 **baostock 官方日历**为权威源——`calendar` 作业（`SyncCalendar` → Python `query_trade_dates`）拉区间内每个自然日的开/休市写 `trading_calendars`（`source='baostock'`），默认每月 1 日 8:00 刷新、首次启动库内不足时自动 bootstrap。每次增量更新另用「实际拉到的 K 线最大日期」反推补登（`source='inferred'`）作兜底。`cron` 的「交易日感知」仅对 K 线作业（`full`/`incremental`）生效；元数据作业（`securities`/`calendar`）在非交易日也照常执行（如月初节假日刷新日历）。
 
 ### M3 技术指标计算
 
@@ -737,27 +770,28 @@ func TestVerify(t *testing.T) {
 
 | 场景 | 后端进程 | 基础设施 | 典型命令 |
 |------|----------|----------|----------|
-| **本地开发** | 本机 Go 直跑 | 仅 PostgreSQL、Redis 容器化 | `make infra-up` + `make run` |
-| **线上部署** | Docker 镜像 | postgres + redis + backend 全容器化 | `backend/deploy/deploy.sh` |
+| **本地开发** | 本机 Go / Python 直跑 | 仅 PostgreSQL、Redis 容器化 | `cd backend/go && make infra-up` + `make run`；`cd backend/python && make run` |
+| **线上部署** | Docker 镜像 | postgres + redis + quant + backend 全容器化 | `backend/deploy/deploy.sh` |
 
-原则：**开发改代码走 `go run`，部署走镜像**；本地与 Docker **共用** `backend/.env` 一份环境变量文件。
+原则：**开发改代码走 `go run` / `uvicorn`，部署走镜像**；本地与 Docker **共用** `backend/.env` 一份环境变量文件（go 与 python 均读取）。
 
 ### 7.2 本地开发（Go 直跑）
 
 #### 前置条件
 
-- 本机 **Go 1.26+**（与 `go.mod` 中 `go 1.26.0` 对齐）。
+- 本机 **Go 1.26+**（与 `backend/go/go.mod` 中 `go 1.26.0` 对齐）。
 - Docker 可用（仅用于 PostgreSQL / Redis）。
-- 首次：`cp .env.example .env`，按需修改。
+- 首次：`cp backend/.env.example backend/.env`，按需修改。
 
 #### 启动步骤
 
 ```bash
 cd backend
-cp .env.example .env              # 首次；按需修改
-make infra-up                     # 启动 postgres + redis（读取 .env 做端口等变量替换）
+cp .env.example .env              # 首次；统一环境变量（go / python 共用）
+cd go
+make infra-up                     # 启动 postgres + redis（读取 ../.env 做端口等变量替换）
 make tidy                         # 首次或依赖变更后
-make run                          # 自动 source .env 后 go run ./cmd/server
+make run                          # 自动 source ../.env 后 go run ./cmd/server
 
 curl http://localhost:8080/health
 ```
@@ -787,12 +821,13 @@ curl http://localhost:8080/health
 
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 由 `main.go` 直接 `os.Getenv` 读取，同样来自 `.env`。
 
-Docker 部署时 compose 通过 `env_file: ../.env` 注入 backend 容器，并**仅覆盖**容器网络相关变量：
+Docker 部署时 compose 通过 `env_file: ../.env` 注入 backend 与 quant 容器，并**仅覆盖**容器网络相关变量：
 
 | 变量 | `.env` 中填写 | Docker 容器内实际值 |
 |------|---------------|---------------------|
-| `PG_HOST` | `localhost` | `postgres`（compose `environment` 覆盖） |
+| `PG_HOST` | `localhost` | `postgres`（compose `environment` 覆盖；go 与 quant 均覆盖） |
 | `REDIS_HOST` | `localhost` | `redis`（compose `environment` 覆盖） |
+| `QUANT_BASE_URL` | `http://127.0.0.1:8000` | `http://quant:8000`（backend 容器覆盖为 compose 服务名） |
 | 其余 | 与本地相同 | 与 `.env` 一致 |
 
 postgres 容器的 `POSTGRES_*` 由 compose 从 `.env` 的 `PG_USER` / `PG_PASSWORD` / `PG_DB` 变量替换注入，保持与 backend 连接配置一致。
@@ -808,7 +843,7 @@ cd backend/deploy
 ./deploy.sh
 ```
 
-脚本流程：校验 `backend/.env` 存在 → `docker compose build backend` → `docker compose up -d` → 轮询 `/health` 直至成功。
+脚本流程：校验 `backend/.env` 存在 → `docker compose build backend quant` → `docker compose up -d`（postgres + redis + quant + backend）→ 轮询 `/health` 直至成功。
 
 首次部署前在服务器创建生产配置：
 
@@ -820,9 +855,10 @@ cp backend/.env.example backend/.env
 #### 镜像与编排
 
 - **Compose 项目名**：`name: warden_stock_data`（统一容器/网络前缀）。
-- **后端镜像**：`warden_stock_data-backend:latest`，由 `deploy/Dockerfile` 多阶段构建（`golang:1.26-alpine` → `alpine:3.20`，`CGO_ENABLED=0`）。
+- **后端镜像**：`warden_stock_data-backend:latest`，由 `backend/go/Dockerfile` 多阶段构建（`golang:1.26-alpine` → `alpine:3.20`，`CGO_ENABLED=0`）。
+- **quant 镜像**：`warden_stock_data-quant:latest`，由 `backend/python/Dockerfile` 构建（`python:3.12-slim`）；**不映射宿主端口**，仅 compose 内网由 backend 经 `http://quant:8000` 调用。
 - **数据持久化**：PostgreSQL 数据目录 bind mount 到 `backend/deploy/pgdata`（已 `.gitignore`），`init.sql` 在首次建库时执行。
-- **服务依赖**：`backend` `depends_on` `postgres`、`redis`；容器内通过服务名互联。
+- **服务依赖**：`quant` `depends_on` `postgres`（healthy）；`backend` `depends_on` `postgres`、`redis`、`quant`；容器内通过服务名互联。
 
 > 生产密钥只写在服务器 `backend/.env`，禁止写入 `Dockerfile` 或提交到仓库。
 

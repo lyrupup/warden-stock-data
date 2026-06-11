@@ -2,7 +2,30 @@
 
 本文档梳理 **个股 K 线（日/周/月）** 与 **当日分时走势** 两类行情数据的获取链路、分层职责、数据源接口、存储策略与关键实现细节，供后续维护与扩展参考。
 
-> 阅读前置：`docs/BACKEND.md`（后端架构）、`docs/openapi.yaml`（接口契约）。
+> 阅读前置：`docs/BACKEND.md`（后端架构）、`docs/openapi.yaml`（接口契约）、`docs/PYTHON_SERVICE.md`（采集/指标服务）。
+
+---
+
+> ## 🆕 v3 增量提速（2026-06）
+>
+> v2 把「日 K 增量」也放到 baostock（Python），但 baostock 逐只串行 RPC 导致**全市场单日增量需约 5.5 小时**，无法支撑盘后量化选股。v3 按「数据源各取所长」重新切分增量与刷新职责，本节为权威说明，优先级高于下方 v2 / v1：
+> - **增量日 K（`incremental`）回到 gotdx，且为 Go 原生写库**：gotdx 走并发连接池，全市场单日增量**约 1 分钟**完成（实测 5207 只 ≈ 48s）。gotdx 日 K 自带昨收(`Last`)/成交额(`Amount`)/涨跌幅(`RiseRate`)，Go 侧据此补全：**涨跌停价**（`internal/service/limit_price.go`，与 Python `limit_price.py` 同口径现算）、**ST**（取 `securities` 表）、**停牌 `trade_status`**（量=0 记 0）；以 `adjust=qfq`、`source=gotdx` UPSERT，续接既有 baostock qfq 序列，并推进水位、补登交易日历。
+>   - **口径说明**：gotdx 日 K 为不复权价，作为「最新一日」追加到 qfq 历史序列；相邻无除权时与 qfq 等价，跨除权日的历史 qfq 连续性由 `factors` / `full`（baostock）周级修正。`turnover_rate` gotdx 底层不可靠（多为 0），如需精确换手率以 baostock `full` 为准。
+> - **新增 `factors`（周级 baostock 对齐）**：按日期区间用 baostock 重拉该区间全市场（或指定代码）日 K，**覆盖 gotdx 写入的数据并把行 `source` 由 `gotdx` 翻为 `baostock`**，同趟刷新**复权因子**（`stock_adjust_factors`）与**证券列表（ST/退市/新股）**。语义：日常 gotdx 增量保证「快」，每周用 baostock 对选定区间做高质量回填校正（含 gotdx 缺失的真实换手率、精确涨跌停/停牌）。
+>   - 复用 `CollectKlineBatch(..., fromOverride, toOverride, ...)`：`fromOverride` 非空时全市场同区间合批，写入 `source=baostock`、`adjust=qfq`，冲突列含 `source` 故直接覆盖 gotdx 行；水位不回退（`marketLatest` 传 nil，仅按实际写入区间推进）。
+>   - 区间可选：用户/定时未指定时**缺省对齐「最近 7 个交易日」**（当天为交易日则含当天）——由 `UpdateService.RecentTradingRange` 优先查 `trading_calendars`（`is_open=true` 倒序取 7 个），日历无数据时按工作日跳过周末回退。baostock 串行，全市场约数小时，默认周六 05:00 跑。
+> - **`full`（baostock 全量历史 qfq + 因子 + 涨跌停 + ST + 停牌）**：保持不变，仅按需触发。
+> - **`securities` / `calendar`**：保持不变。
+> - 默认作业新增 `stock-weekly-refresh`（`factors`，周六 05:00，默认启用）。
+>
+> ## v2 链路升级（2026-06）
+>
+> 本文档原描述「gotdx 拉日K + 盘后算指标快照落库」。v2 架构调整为 **Go + Python 双服务**，本节为权威说明，下文未及更新处以本节为准：
+> - **日 K 线**：数据源由 gotdx 改为 **baostock**（Python quant 服务采集），落 `stock_daily_klines`（前复权）；同时采集**复权因子**（`stock_adjust_factors`）、**换手率/涨跌幅**，自算**涨跌停价**，并落**停牌 `trade_status`、当日 `is_st`**。读取仍由 Go「读库优先」直查 PG。
+> - **分时走势**：**不变**，仍由 gotdx（Go）实时透传，不落库。
+> - **技术指标**：**不再落库快照**（`stock_indicator_snapshots` 下线），改由 Python quant 服务用 **pandas-ta 实时计算**，Go 转发；`indicators` 参数、`/open/v1/meta` 指标目录均经 Python。
+> - **更新作业**：原「五类」精简为**三类**——`securities`（证券+退市+ST）/ `full`（全量日K+复权因子+涨跌停+ST+停牌）/ `incremental`（增量日K）；**删除** `indicator_full` / `indicator_incremental`。Go `JobRunner` 调度编排不变，`runOne` 改为调用 Python。
+> - 下文 §三 K 线链路（gotdx 拉取、增量落库、五类作业）描述属 v1，实现已迁移；§四 分时链路与 §4.9/§4.10 前端做 T 研判仍有效。
 
 ---
 
@@ -31,18 +54,18 @@
 
 | 分层 | 文件 | 职责 |
 |------|------|------|
-| 路由 | `backend/internal/router/router.go` | 注册 admin / open 两组只读路由 |
-| Handler | `backend/internal/handler/open/market_handler.go` | 解析 query 参数、统一响应 |
-| Service（K 线） | `backend/internal/service/kline_service.go` | 读库优先 + 区间/数量过滤 |
-| Service（分时/快照） | `backend/internal/service/quote_service.go` | 透传 provider + 补全股票名 |
-| Service（增量落库） | `backend/internal/service/update_service.go` | 盘后增量写日 K + 推进水位 |
-| Repository | `backend/internal/repository/market_repo.go` | `KlineRepository`：查询/批量 upsert |
-| Provider 接口 | `backend/internal/integration/market/provider.go` | `IMarketProvider` 抽象 |
-| gotdx 实现 | `backend/internal/integration/market/gotdx_provider.go` | 调 gotdx 拉数 |
-| 字段映射 | `backend/internal/integration/market/gotdx_mapper.go` | gotdx 原始结构 → 领域模型 |
-| 连接池 | `backend/internal/integration/market/gotdx_pool.go` | 复用 TDX TCP 连接 |
-| 工厂 | `backend/internal/integration/market/factory.go` | 创建 gotdx provider |
-| 领域模型 | `backend/internal/model/models.go` | `StockDailyKline` / `StockIntraday` |
+| 路由 | `backend/go/internal/router/router.go` | 注册 admin / open 两组只读路由 |
+| Handler | `backend/go/internal/handler/open/market_handler.go` | 解析 query 参数、统一响应 |
+| Service（K 线） | `backend/go/internal/service/kline_service.go` | 读库优先 + 区间/数量过滤 |
+| Service（分时/快照） | `backend/go/internal/service/quote_service.go` | 透传 provider + 补全股票名 |
+| Service（增量落库） | `backend/go/internal/service/update_service.go` | 盘后增量写日 K + 推进水位 |
+| Repository | `backend/go/internal/repository/market_repo.go` | `KlineRepository`：查询/批量 upsert |
+| Provider 接口 | `backend/go/internal/integration/market/provider.go` | `IMarketProvider` 抽象 |
+| gotdx 实现 | `backend/go/internal/integration/market/gotdx_provider.go` | 调 gotdx 拉数 |
+| 字段映射 | `backend/go/internal/integration/market/gotdx_mapper.go` | gotdx 原始结构 → 领域模型 |
+| 连接池 | `backend/go/internal/integration/market/gotdx_pool.go` | 复用 TDX TCP 连接 |
+| 工厂 | `backend/go/internal/integration/market/factory.go` | 创建 gotdx provider |
+| 领域模型 | `backend/go/internal/model/models.go` | `StockDailyKline` / `StockIntraday` |
 | 前端图表 | `frontend/src/components/common/intraday-chart/intraday-chart.tsx` | 价/均价/量柱 + 乖离副图、量能门槛线、做 T 高抛低吸轨道带与 B/S、研判面板 |
 | 前端信号 | `frontend/src/lib/intraday-signals.ts` | `computeIntradayMetrics`（逐点乖离/量比）+ `computeIntradaySignals`（均价线交叉趋势 BS） |
 | 前端做 T | `frontend/src/lib/daytrade.ts` | 历史基准/当日趋势态/可做 T 判定/高抛低吸 B/S/分时成熟度 纯函数 |
@@ -142,13 +165,15 @@ bars, _ := fetchKlineAll(ctx, c, klineType, mkt, code, adjust)
   → provider.Kline(code, "day", "qfq")    # 实时拉 TDX
   → filterFromWatermark(bars, wm)          # 保留「水位日及之后」（含水位日本身，覆盖最新一日）
   → klineRepo.UpsertBatch(newBars)         # UPSERT：新交易日新增、最新一日覆盖更新
-  → calRepo.UpsertInferred(dates)          # 用实际成交日反推校正交易日历
+  → calRepo.UpsertInferred(dates)          # 用实际成交日反推补登交易日历（baostock 官方日历的补充/兜底）
   → 推进 watermark 到 max(数据源最新, 全市场最新交易日)
 ```
 
 水位机制的两个关键设计：
-- **`PendingCodes` 预筛**：增量更新前，用「库内 K 线 `MAX(trade_date)`」为基准，仅挑「无水位（新股）或水位落后」的标的发起 TDX 请求，盘后多数已最新时请求量可从全市场约 5200 次降到个位/十位数。
+- **`PendingCodes` 预筛**：增量更新前，仅挑「无水位（新股）或水位落后」的标的发起采集请求，盘后多数已最新时请求量可从全市场约 5200 次降到个位/十位数。
+  - **基准交易日取「行情源（gotdx 指数）最新交易日」**，取不到才回退「库内 K 线 `MAX(trade_date)`」。⚠️ 不能只用库内 `MAX(trade_date)` 作基准：全量回补后各水位都等于库内最新，会判定「无人落后」而全部过滤、**增量空跑**，永远拉不到新一日。用行情源最新日作基准，库里缺最新一日时所有落后标的才会被纳入增量。
 - **水位对齐避免反复拉取**：即便本轮无新 K 线（停牌/次新股），也把水位推进到全市场最新交易日，否则这些股票会因永远落后而每轮被反复无效拉取。
+- **指定回补区间时跳过预筛**：手动触发携带 `from_date`/`to_date` 时，对范围内全部代码按该区间统一回补（忽略各自水位、不做 `PendingCodes` 预筛），用于按区间补历史缺口或精确拉取某一交易日（起止设为同一天）。
 
 > **含水位日覆盖**：`filterFromWatermark` 保留「水位日及之后」（含水位日本身），借 UPSERT 覆盖更新最新一日已有数据；这与「全量回补」的「整体覆盖全部历史」区别在于覆盖范围。
 > 复权口径：增量落库固定以 **`qfq`（前复权）** 存储，作为指标计算与全市场扫描的统一底座。
@@ -159,7 +184,8 @@ bars, _ := fetchKlineAll(ctx, c, klineType, mkt, code, adjust)
 
 | job_type | 名称 | 处理方法 | 拉 K 线 | 算指标 | 覆盖范围 |
 |----------|------|----------|:------:|:------:|----------|
-| `securities` | 证券列表同步 | `SyncSecuritiesList` | ❌ | ❌ | 同步 gotdx 证券列表（代码/名称/板块） |
+| `securities` | 证券列表同步 | `SyncSecuritiesList` | ❌ | ❌ | 经 Python baostock 同步证券列表（代码/名称/板块/上市/退市/ST） |
+| `calendar` | 交易日历同步 | `SyncCalendar` | ❌ | ❌ | 经 Python baostock 拉官方交易日历入 `trading_calendars`（每个自然日开/休市） |
 | `full` | 全量日K数据回补 | `SyncKlineFull` | ✅ | ❌ | 拉数据源全部历史日 K，**整体覆盖**落库（已有日期一并覆盖） |
 | `incremental` | 增量日K数据回补 | `IncrementalOne` | ✅ | ❌ | 落库「水位日及之后」日 K，**覆盖最新一日**、补齐缺口 |
 | `indicator_full` | 全量日K技术数据回补 | `BackfillIndicators` | ❌ | ✅ | 基于库内全量日 K **逐日重算**全部指标快照（全量覆盖） |
@@ -167,11 +193,13 @@ bars, _ := fetchKlineAll(ctx, c, klineType, mkt, code, adjust)
 
 各作业说明：
 
-1. **证券列表同步（`securities`）**：调一次 `SyncSecuritiesList` 从 gotdx 拉全市场证券列表并 UPSERT 入库（发现新股 / 更新名称、板块、状态），几秒完成，**不触达 K 线接口**，是新股入库的轻量入口。其余四类作业在未显式指定 `codes` 时，会以证券列表为标的全集逐只处理。
+1. **证券列表同步（`securities`）**：调一次 `SyncSecuritiesList` 经 Python baostock 拉全市场证券列表并 UPSERT 入库（发现新股 / 更新名称、板块、上市退市、ST 状态），几秒完成，**不触达 K 线接口**，是新股入库的轻量入口。K 线类作业在未显式指定 `codes` 时，会以证券列表为标的全集逐只处理。
+
+   **交易日历同步（`calendar`）**：调一次 `SyncCalendar` 经 Python baostock `query_trade_dates` 拉**官方交易日历**（区间内每个自然日 + 是否交易），UPSERT 入 `trading_calendars`（`market`+`cal_date` 唯一键，`is_open` 标记开/休市，`source=baostock`），几秒完成，**不触达 K 线接口**。这是调度器「交易日感知」的权威数据源。起点默认用 Python 侧 `BACKFILL_START_DATE`，**终点默认到当年年底**（`{今年}-12-31`，拉全当年节假日；baostock `end` 留空只会返回到最近一个交易日，故须显式给到年底）。手动触发时可在弹窗指定**拉取日期区间**（calendar 作业无股票维度，只有日期区间）。默认 cron 每月 1 日 8:00 刷新一次（日历按年增量发布）；首次启动若库内日历不足（`< 100` 行）会自动 bootstrap 全量拉取。
 
 2. **全量日K数据回补（`full`）**：对每只标的 `provider.KlineFull(code, "day", "qfq")` **分页拉取**数据源全部历史日 K（每页 600 根回溯至尽头），整体 `UpsertBatch` 落库——已存在日期的日 K 也一并 UPSERT **覆盖更新**（修复历史错漏 / 复权口径变化），随后推进水位到最新交易日。仅按最新一日补登交易日历，避免在多标的间重复写入海量冗余日历。**不计算指标**。开销大，默认停用（默认 cron 周六 4:00），按需手动触发。
 
-3. **增量日K数据回补（`incremental`）**：见 3.5。落库「水位日及之后」日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位。未指定 `codes` 时经 `PendingCodes` 预筛仅处理落后标的（性能）。**不计算指标**。默认 cron 17:00。
+3. **增量日K数据回补（`incremental`）**：见 3.5。落库「水位日及之后」日 K（含水位日本身，**覆盖最新一日**），补齐缺口并推进水位。未指定 `codes` 且未指定区间时经 `PendingCodes` 预筛仅处理落后标的（性能）；预筛基准取行情源最新交易日，避免全量回补后库内最新==各水位导致的空跑。**支持 `from_date`/`to_date` 回补区间**（手动触发）：指定后对全部目标代码按区间统一回补并跳过预筛，可精确拉取「最新一个交易日」（起止设为同一天）或回补历史区间。**不计算指标**。默认 cron 17:00。
 
 4. **全量日K技术数据回补（`indicator_full`）**：基于库内**已落库的全量日 K**，对每只标的逐历史交易日 `point-in-time` 重算系统支持的全部默认指标（`defaultSnapshotTypes`：MA5~60 / MACD / KDJ / RSI / BOLL / ATR / 动量等），**全量覆盖**写 `stock_indicator_snapshots`。不拉行情。开销大，默认停用（默认 cron 周六 6:00）。
 

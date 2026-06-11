@@ -217,10 +217,50 @@ paths:
     post:
       tags: [DataSources]
       summary: 触发连通性探测
+      description: |
+        按数据源类型分流探测并落库 health 字段：
+        - `gotdx`：行情 provider 连通性（实时行情/增量日 K）
+        - `baostock`：Python quant 服务 `/health`（日 K 全量/对齐采集经 quant 访问 baostock）
       security: [{ AdminJWT: [] }]
       parameters: [{ in: path, name: id, required: true, schema: { type: integer } }]
       responses:
-        "200": { $ref: "#/components/responses/OK" }
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          health: { type: string, enum: [ok, down] }
+
+  /admin/klines/source-stats:
+    get:
+      tags: [DataSources]
+      summary: 日 K 落库按 source 聚合统计
+      description: |
+        按 `stock_daily_klines.source`（gotdx / baostock）聚合覆盖股票数、数据行数、日期区间。
+        覆盖股票数 ≤ 100 时返回 `codes` 清单，便于核对增量/对齐进度；较多时 `codes` 为空。
+
+        该统计需扫描全库（数千万行，约数秒），结果按 30 分钟缓存到 Redis：默认返回缓存
+        （`cached=true`），`refresh=true` 时强制重算并回写缓存（前端「刷新」按钮触发）。
+      security: [{ AdminJWT: [] }]
+      parameters:
+        - { in: query, name: market, schema: { type: string, default: CN } }
+        - { in: query, name: refresh, schema: { type: boolean, default: false }, description: "true 时跳过缓存强制重算" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data: { $ref: "#/components/schemas/KlineSourceStats" }
 
   /admin/jobs:
     get:
@@ -279,18 +319,36 @@ paths:
               properties:
                 type:
                   type: string
-                  enum: [securities, full, incremental, indicator_full, indicator_incremental]
+                  enum: [securities, calendar, factors, full, incremental, indicator_full, indicator_incremental]
                   default: incremental
                   description: >-
-                    五类作业（K 线拉取与指标计算解耦）：
-                    securities=证券列表同步（轻量，不拉 K 线）；
-                    full=全量日K数据回补（整体覆盖历史日 K）；
-                    incremental=增量日K数据回补（补齐并覆盖最新一日日 K，留空 codes 时按 watermark 仅更新落后标的）；
+                    作业类型（K 线拉取与元数据/指标计算解耦）：
+                    securities=证券列表同步（轻量，经 baostock，不拉 K 线）；
+                    calendar=交易日历同步（轻量，经 baostock query_trade_dates 拉官方日历入 trading_calendars，不拉 K 线）；
+                    factors=周级 baostock 对齐（按区间用 baostock 重拉该区间日 K 覆盖 gotdx 数据并把 source 翻为 baostock，同趟刷复权因子与证券列表 ST/退市；from_date/to_date 留空默认对齐最近 7 个交易日；全市场约数小时，建议周末跑）；
+                    full=全量日K数据回补（经 baostock 整体覆盖历史日 K）；
+                    incremental=增量日K数据回补（经 gotdx Go 原生并发写库，补齐并覆盖最新一日，全市场分钟级；留空 codes 时按 watermark 仅更新落后标的）；
                     indicator_full=全量日K技术数据回补（逐日重算全部指标快照）；
                     indicator_incremental=增量日K技术数据回补（算最新一日指标快照）。
                     兼容旧值 snapshot/indicator（等价 indicator_incremental）。
                 market: { type: string, default: CN }
-                codes: { type: array, items: { type: string }, description: "触发范围：为空表示全量股票（按证券列表）；传入则仅处理这些代码，便于个别股票单独补数。增量类型留空时按 watermark 自动筛待更新" }
+                codes: { type: array, items: { type: string }, description: "触发范围：为空表示全量股票（按证券列表）；传入则仅处理这些代码，便于个别股票单独补数。增量类型留空时按 watermark 自动筛待更新。calendar 作业无股票维度，忽略该字段" }
+                from_date:
+                  type: string
+                  format: date
+                  description: >-
+                    起始日（YYYY-MM-DD，可选，对 full/incremental/factors/calendar 生效）。
+                    full/incremental：指定后对范围内全部代码按该起点统一回补，并跳过「仅落后标的」预筛（用于补历史缺口或拉取最新一个交易日，与 to_date 设为同一天）。
+                    factors：周级 baostock 对齐区间起点，留空默认对齐最近 7 个交易日。
+                    calendar：日历拉取起点，留空取 BACKFILL_START_DATE。
+                to_date:
+                  type: string
+                  format: date
+                  description: >-
+                    结束日（YYYY-MM-DD，可选，不得早于 from_date）。
+                    full/incremental：留空到数据源可得的最新交易日。
+                    factors：周级 baostock 对齐区间终点，留空默认对齐最近 7 个交易日（当天为交易日则含当天）。
+                    calendar：留空**默认到当年年底**（拉全当年节假日），超出 baostock 已发布范围的未来日期自动截断。
       responses:
         "200":
           description: |
@@ -307,7 +365,7 @@ paths:
                         properties:
                           runId: { type: integer }
                           status: { type: string, enum: [running, waiting] }
-        "400": { description: 作业已停用，无法手动触发 }
+        "400": { description: "作业已停用无法手动触发，或 from_date/to_date 格式错误 / to_date 早于 from_date" }
 
   /admin/jobs/runs:
     get:
@@ -830,7 +888,7 @@ components:
       properties:
         id: { type: integer }
         name: { type: string }
-        job_type: { type: string, enum: [securities, full, incremental, indicator_full, indicator_incremental, snapshot, indicator], description: "五类作业 + 兼容旧值 snapshot/indicator" }
+        job_type: { type: string, enum: [securities, calendar, factors, full, incremental, indicator_full, indicator_incremental, snapshot, indicator], description: "作业类型 + 兼容旧值 snapshot/indicator" }
         market: { type: string, example: CN }
         cron_expr: { type: string, example: "0 0 17 * * *" }
         batch_size: { type: integer, example: 20 }
@@ -842,7 +900,7 @@ components:
       properties:
         id: { type: integer }
         job_id: { type: integer }
-        job_type: { type: string, enum: [securities, full, incremental, indicator_full, indicator_incremental, snapshot, indicator] }
+        job_type: { type: string, enum: [securities, calendar, factors, full, incremental, indicator_full, indicator_incremental, snapshot, indicator] }
         market: { type: string, example: CN }
         status: { type: string, enum: [waiting, running, done, failed, canceled], description: "waiting：同类型已有运行中作业，排队等待；可被取消" }
         total: { type: integer }
@@ -856,6 +914,28 @@ components:
         finished_at: { type: string, format: date-time, nullable: true }
         error_msg: { type: string }
 
+    KlineSourceStat:
+      type: object
+      properties:
+        source: { type: string, example: baostock, description: "K 线落库来源：gotdx（盘后增量）或 baostock（全量/周级对齐）" }
+        rows: { type: integer, description: "该 source 下的 K 线行数" }
+        stocks: { type: integer, description: "覆盖股票数（DISTINCT stock_code）" }
+        min_date: { type: string, format: date }
+        max_date: { type: string, format: date }
+        codes:
+          type: array
+          items: { type: string }
+          description: "覆盖股票数 ≤ 100 时列出代码，否则为空"
+
+    KlineSourceStats:
+      type: object
+      properties:
+        stats:
+          type: array
+          items: { $ref: "#/components/schemas/KlineSourceStat" }
+        generated_at: { type: string, format: date-time, description: "本结果的统计生成时间" }
+        cached: { type: boolean, description: "true 表示来自 Redis 缓存，false 表示本次实时重算" }
+
     Freshness:
       type: object
       properties:
@@ -865,6 +945,8 @@ components:
         last_scan_at: { type: string, format: date-time, nullable: true }
         securities_count: { type: integer }
         kline_stock_count: { type: integer, description: "库中已落库行情数据的股票数量（已从数据源拉取覆盖度）" }
+        calendar_days: { type: integer, description: "交易日历已记录的交易日（is_open=true）总数" }
+        calendar_latest: { type: string, format: date, description: "交易日历已记录的最新交易日" }
         indicator_snapshot_latest_date: { type: string, format: date, description: "指标快照最新交易日" }
         indicator_snapshot_earliest_date: { type: string, format: date, description: "指标快照最早交易日" }
         indicator_snapshot_stock_count: { type: integer, description: "最新快照交易日有指标快照的股票数（当日快照覆盖完整性）" }
