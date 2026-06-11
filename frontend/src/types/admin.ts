@@ -44,6 +44,21 @@ export type TDataSource = {
   health: "ok" | "degraded" | "down" | "unknown";
 };
 
+export type TSourceStat = {
+  source: string;
+  rows: number;
+  stocks: number;
+  min_date: string;
+  max_date: string;
+  codes: string[];
+};
+
+export type TSourceStatsResult = {
+  stats: TSourceStat[];
+  generated_at: string;
+  cached: boolean;
+};
+
 export type TJobType =
   | "securities"
   | "full"
@@ -90,10 +105,10 @@ export type TFreshness = {
   last_scan_at: string | null;
   securities_count: number;
   kline_stock_count: number;
-  indicator_snapshot_latest_date: string;
-  indicator_snapshot_earliest_date: string;
-  indicator_snapshot_stock_count: number;
-  default_snapshot_types: string[];
+  calendar_days: number;
+  calendar_latest: string;
+  provider_source?: string;
+  quant_source?: string;
 };
 
 export type TCreateCredentialReq = {

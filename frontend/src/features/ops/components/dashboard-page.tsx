@@ -33,7 +33,7 @@ export const DashboardPage = () => {
         description="数据新鲜度、数据源健康与近期作业"
       />
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Card className="flex flex-col">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -47,6 +47,32 @@ export const DashboardPage = () => {
             <p className="mt-1 text-xs text-muted-foreground">
               K 线更新至 {freshness?.kline_updated_to ?? "—"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              交易日历已记录
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col">
+            <div className="text-2xl font-bold">
+              {freshness?.calendar_days?.toLocaleString() ?? "—"}
+              <span className="ml-1 text-sm font-normal text-muted-foreground">
+                个交易日
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              日历最新至 {freshness?.calendar_latest || "—"}
+            </p>
+            <Button
+              asChild
+              variant="link"
+              className="mt-auto h-auto self-start p-0 pt-2 text-xs"
+            >
+              <Link to="/ops/jobs">同步日历 →</Link>
+            </Button>
           </CardContent>
         </Card>
 

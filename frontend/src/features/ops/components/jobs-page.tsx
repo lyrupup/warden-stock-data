@@ -64,6 +64,8 @@ const STATUS_LABEL: Record<TJobRun["status"], string> = {
 
 const JOB_TYPE_LABEL: Record<string, string> = {
   securities: "证券列表同步",
+  calendar: "交易日历同步",
+  factors: "周级 baostock 对齐",
   full: "全量日K数据回补",
   incremental: "增量日K数据回补",
   indicator_full: "全量日K技术数据回补",
@@ -77,16 +79,18 @@ const jobTypeLabel = (t: string) => JOB_TYPE_LABEL[t] ?? t;
 
 // 各 job_type 的实际行为说明（与后端 job_runner.runOne 分发一致），便于运维理解五类作业职责。
 const JOB_TYPE_HINT: Record<string, string> = {
-  securities: "把 gotdx 证券列表（代码 / 名称 / 板块）同步入库；不拉 K 线、不计算指标。",
-  full: "按证券列表整体覆盖回补全部历史日 K 数据，已有日期的日 K 也一并覆盖更新；不计算指标。",
+  securities: "经 Python baostock 同步证券列表（代码/名称/板块/上市/退市/ST）；不拉 K 线。",
+  calendar:
+    "经 Python baostock 同步官方交易日历（每个自然日开/休市）到 trading_calendars，供调度交易日感知；不拉 K 线。",
+  factors:
+    "周级 baostock 对齐：用 baostock 重拉日期区间内全市场日 K，覆盖 gotdx 数据（source 翻为 baostock）并刷新复权因子、证券列表。区间留空默认最近 7 个交易日。baostock 串行，全市场约数小时，建议周末跑。",
+  full: "经 Python baostock 全量回补历史日 K + 复权因子 + 涨跌停 + ST + 停牌（baostock 串行，约数小时）。",
   incremental:
-    "按证券列表补齐并覆盖最新一日日 K 数据，已有最新一日数据也覆盖更新；不计算指标。",
-  indicator_full:
-    "基于已入库的全量日 K，逐日重算系统支持的全部技术指标快照，全量覆盖更新。",
-  indicator_incremental:
-    "基于已入库的日 K，计算最新一日 K 线的各项技术指标快照，覆盖更新。",
-  snapshot: "（历史兼容）等价于增量日K技术数据回补：仅算最新一日指标。",
-  indicator: "（历史兼容）等价于增量日K技术数据回补：仅算最新一日指标。",
+    "经 gotdx（Go 并发连接池）增量采集日 K（含水位日覆盖），涨跌停 Go 现算、ST 取证券表、停牌看量=0；全市场分钟级。",
+  indicator_full: "（已废弃 v2）指标改实时计算，不再落库快照；触发后无实际操作。",
+  indicator_incremental: "（已废弃 v2）指标改实时计算，不再落库快照；触发后无实际操作。",
+  snapshot: "（历史兼容，已废弃）",
+  indicator: "（历史兼容，已废弃）",
 };
 
 const jobTypeHint = (t: string) => JOB_TYPE_HINT[t];
@@ -152,7 +156,7 @@ export const JobsPage = () => {
         description="配置盘后调度、手动触发更新并查看执行进度"
       />
 
-      <div className="mb-8 grid gap-4 md:grid-cols-2">
+      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {jobs?.map((job) => (
           <Card key={job.id}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">

@@ -1,4 +1,4 @@
-import { Activity } from "lucide-react";
+import { Activity, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -13,8 +13,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format";
-import type { TFreshness } from "@/types/admin";
-import { useDatasources, useFreshness, useHealthcheck } from "../hooks/use-ops";
+import type { TFreshness, TSourceStat } from "@/types/admin";
+import {
+  useDatasources,
+  useFreshness,
+  useHealthcheck,
+  useRefreshSourceStats,
+  useSourceStats,
+} from "../hooks/use-ops";
 
 const healthVariant = (
   health: string,
@@ -35,9 +41,9 @@ const STORAGE_STRATEGY: {
 }[] = [
   {
     data: "日 K 线",
-    storage: "本地落库（前复权）",
-    timing: "盘后增量（默认 17:00）",
-    source: "stock_daily_klines",
+    storage: "本地落库（前复权 + 涨跌停/ST/停牌）",
+    timing: "盘后 gotdx 增量（默认 17:00）+ 周级 baostock 对齐",
+    source: "gotdx / baostock → stock_daily_klines",
     api: "/kline?period=day",
   },
   {
@@ -56,9 +62,9 @@ const STORAGE_STRATEGY: {
   },
   {
     data: "日线技术指标",
-    storage: "本地快照",
-    timing: "盘后逐日扫描",
-    source: "stock_indicator_snapshots",
+    storage: "不落库 · Python 实时计算",
+    timing: "每次请求",
+    source: "quant 服务（pandas）",
     api: "/indicators · /kline?indicators=",
   },
   {
@@ -90,6 +96,7 @@ export const DatasourcesPage = () => {
       />
 
       <DataCompletenessCard f={freshness} />
+      <SourceDistributionCard />
       <StorageStrategyCard />
 
       <Card className="mt-6">
@@ -206,20 +213,13 @@ const DataCompletenessCard = ({ f }: { f: TFreshness | undefined }) => {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Stat label="最新交易日" value={f?.latest_trade_date || "—"} />
           <Stat label="K 线更新至" value={f?.kline_updated_to || "—"} />
-          <Stat
-            label="指标快照最新日"
-            value={f?.indicator_snapshot_latest_date || "—"}
-          />
-          <Stat
-            label="指标快照起始日"
-            value={f?.indicator_snapshot_earliest_date || "—"}
-          />
           <Stat label="证券总数" value={securities.toLocaleString()} />
           <Stat
             label="最近扫描"
             value={formatDateTime(f?.last_scan_at) || "—"}
           />
-          <Stat label="行情源" value="gotdx（通达信）" />
+          <Stat label="实时行情源" value={f?.provider_source || "gotdx"} />
+          <Stat label="日K采集源" value={f?.quant_source || "baostock"} />
           <Stat label="市场" value={f?.market || "CN"} />
         </div>
 
@@ -229,32 +229,127 @@ const DataCompletenessCard = ({ f }: { f: TFreshness | undefined }) => {
             num={f?.kline_stock_count ?? 0}
             denom={securities}
           />
-          <CoverageBar
-            label={`指标快照覆盖（${f?.indicator_snapshot_latest_date || "最新日"} 有快照股票数 / 证券总数）`}
-            num={f?.indicator_snapshot_stock_count ?? 0}
-            denom={securities}
-          />
         </div>
 
+        <p className="text-sm text-muted-foreground">
+          技术指标已改为 Python quant 服务实时计算，不再落库指标快照。
+        </p>
+      </CardContent>
+    </Card>
+  );
+};
+
+const SOURCE_META: Record<
+  string,
+  { label: string; variant: "success" | "secondary" | "warning" }
+> = {
+  baostock: { label: "baostock 日K采集", variant: "success" },
+  gotdx: { label: "gotdx 实时/增量", variant: "warning" },
+};
+
+const SourceRow = ({ s }: { s: TSourceStat }) => {
+  const meta = SOURCE_META[s.source] ?? {
+    label: s.source,
+    variant: "secondary" as const,
+  };
+  const range =
+    s.min_date && s.max_date ? `${s.min_date} ~ ${s.max_date}` : "—";
+  return (
+    <TableRow>
+      <TableCell>
+        <Badge variant={meta.variant}>{meta.label}</Badge>
+        <span className="ml-2 font-mono text-xs text-muted-foreground">
+          {s.source}
+        </span>
+      </TableCell>
+      <TableCell className="tabular-nums font-medium">
+        {s.stocks.toLocaleString()} 只
+      </TableCell>
+      <TableCell className="tabular-nums text-muted-foreground">
+        {s.rows.toLocaleString()} 行
+      </TableCell>
+      <TableCell className="font-mono text-xs">{range}</TableCell>
+      <TableCell>
+        {s.codes.length > 0 ? (
+          <div className="flex max-w-md flex-wrap gap-1">
+            {s.codes.map((code) => (
+              <Badge key={code} variant="outline" className="font-mono text-xs">
+                {code}
+              </Badge>
+            ))}
+          </div>
+        ) : s.stocks > 0 ? (
+          <span className="text-xs text-muted-foreground">
+            股票数较多，省略代码清单
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
+      </TableCell>
+    </TableRow>
+  );
+};
+
+const SourceDistributionCard = () => {
+  const { data, isLoading, isError } = useSourceStats();
+  const refresh = useRefreshSourceStats();
+  // 初次加载或后端缓存命中均为「读缓存」；点刷新走 mutation 强制重算。
+  const busy = isLoading || refresh.isPending;
+  const stats = data?.stats ?? [];
+  return (
+    <Card className="mb-6">
+      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
         <div>
-          <div className="mb-1.5 text-sm text-muted-foreground">
-            默认逐日快照指标（可批量按交易日 point-in-time 读取；其余指标走实时计算）
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {(f?.default_snapshot_types ?? []).length > 0 ? (
-              f!.default_snapshot_types.map((t) => (
-                <span
-                  key={t}
-                  className="rounded-full border bg-muted px-2 py-0.5 font-mono text-xs"
-                >
-                  {t}
-                </span>
-              ))
-            ) : (
-              <span className="text-sm text-muted-foreground">—</span>
-            )}
-          </div>
+          <CardTitle className="text-lg">数据来源分布（K 线落库 source 聚合）</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {data
+              ? `统计于 ${formatDateTime(data.generated_at)}${data.cached ? " · 来自缓存" : " · 实时重算"}`
+              : "全库聚合，结果按 30 分钟缓存"}
+          </p>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void refresh.mutateAsync()}
+        >
+          <RefreshCw
+            className={`mr-1 h-3 w-3 ${refresh.isPending ? "animate-spin" : ""}`}
+          />
+          刷新
+        </Button>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-muted-foreground">统计中…（数千万行分组，约数秒）</p>
+        ) : isError ? (
+          <p className="text-destructive">统计失败，请稍后重试</p>
+        ) : !stats.length ? (
+          <EmptyState message="K 线库暂无数据" />
+        ) : (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>来源</TableHead>
+                  <TableHead>覆盖股票数</TableHead>
+                  <TableHead>数据行数</TableHead>
+                  <TableHead>日期区间</TableHead>
+                  <TableHead>股票代码（≤100 只时列出）</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {stats.map((s) => (
+                  <SourceRow key={s.source} s={s} />
+                ))}
+              </TableBody>
+            </Table>
+            <p className="mt-3 text-xs text-muted-foreground">
+              baostock 为日 K 全量与周级对齐采集源；gotdx 为盘后增量来源（对齐后会被翻为
+              baostock）。覆盖股票数 ≤ 100 时列出具体代码，便于核对增量/对齐进度。
+            </p>
+          </>
+        )}
       </CardContent>
     </Card>
   );

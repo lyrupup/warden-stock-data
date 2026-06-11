@@ -67,9 +67,24 @@ export const JobRunDialog = ({
   const [codes, setCodes] = useState<string[]>(initialCodes);
   const [kw, setKw] = useState("");
   const [manual, setManual] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const { data: results } = useStockSearch(kw.trim());
+
+  // 交易日历作业：只按日期区间拉取，不涉及股票代码。
+  const isCalendar = job?.job_type === "calendar";
+  // 周级 baostock 对齐作业：按指定区间用 baostock 覆盖该区间 K 线（source 翻 baostock）+刷因子。
+  const isFactors = job?.job_type === "factors";
+  // 股票范围仅对逐只处理的作业有意义；日历作业无股票维度。
+  const supportsScope = !isCalendar;
+  // 日期区间对日 K 采集类作业（全量 / 增量 / 周级对齐）与交易日历作业均有意义。
+  const supportsDateRange =
+    job?.job_type === "full" ||
+    job?.job_type === "incremental" ||
+    isFactors ||
+    isCalendar;
 
   // 打开（job 变化）时按入参重置表单状态。
   useEffect(() => {
@@ -78,6 +93,8 @@ export const JobRunDialog = ({
       setCodes(initialCodes);
       setKw("");
       setManual("");
+      setFromDate("");
+      setToDate("");
       setError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,15 +117,23 @@ export const JobRunDialog = ({
   const submit = async () => {
     if (!job) return;
     setError(null);
-    if (scope === "codes" && codes.length === 0) {
+    if (supportsScope && scope === "codes" && codes.length === 0) {
       setError("请至少选择或输入一个股票代码");
+      return;
+    }
+    const from = fromDate.trim();
+    const to = toDate.trim();
+    if (supportsDateRange && from && to && from > to) {
+      setError("结束日期不能早于起始日期");
       return;
     }
     try {
       const result = await runJob.mutateAsync({
         id: job.id,
         type: job.job_type,
-        codes: scope === "codes" ? codes : undefined,
+        codes: supportsScope && scope === "codes" ? codes : undefined,
+        fromDate: supportsDateRange && from ? from : undefined,
+        toDate: supportsDateRange && to ? to : undefined,
       });
       onSubmitted(result.runId);
       onClose();
@@ -130,34 +155,40 @@ export const JobRunDialog = ({
             <DialogHeader>
               <DialogTitle>触发作业 · {job.name}</DialogTitle>
               <DialogDescription>
-                选择触发范围：全量股票按证券列表逐只处理；也可指定个别代码单独补数。
+                {isCalendar
+                  ? "同步 baostock 官方交易日历入库。可选拉取日期区间；留空默认从最早历史拉到今年年底。"
+                  : isFactors
+                    ? "周级 baostock 对齐：按所选日期区间用 baostock 重拉该区间全市场日 K，覆盖 gotdx 数据（行 source 翻为 baostock）并刷新复权因子、证券列表。区间留空默认对齐最近 7 个交易日。"
+                    : "选择触发范围：全量股票按证券列表逐只处理；也可指定个别代码单独补数。"}
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4">
-              <div className="grid gap-2">
-                <Label>触发范围</Label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={scope === "all" ? "default" : "outline"}
-                    onClick={() => setScope("all")}
-                  >
-                    全量股票
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={scope === "codes" ? "default" : "outline"}
-                    onClick={() => setScope("codes")}
-                  >
-                    指定股票代码
-                  </Button>
+              {supportsScope ? (
+                <div className="grid gap-2">
+                  <Label>触发范围</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={scope === "all" ? "default" : "outline"}
+                      onClick={() => setScope("all")}
+                    >
+                      全量股票
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={scope === "codes" ? "default" : "outline"}
+                      onClick={() => setScope("codes")}
+                    >
+                      指定股票代码
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              ) : null}
 
-              {scope === "codes" ? (
+              {supportsScope && scope === "codes" ? (
                 <div className="space-y-3">
                   <div className="grid gap-2">
                     <Label htmlFor="job-code-search">搜索添加</Label>
@@ -239,6 +270,40 @@ export const JobRunDialog = ({
                       </p>
                     )}
                   </div>
+                </div>
+              ) : null}
+
+              {supportsDateRange ? (
+                <div className="grid gap-2">
+                  <Label>
+                    {isCalendar
+                      ? "拉取日期区间（可选）"
+                      : isFactors
+                        ? "对齐日期区间（可选）"
+                        : "回补日期区间（可选）"}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="date"
+                      aria-label="起始日期"
+                      value={fromDate}
+                      onChange={(e) => setFromDate(e.target.value)}
+                    />
+                    <span className="text-muted-foreground">至</span>
+                    <Input
+                      type="date"
+                      aria-label="结束日期"
+                      value={toDate}
+                      onChange={(e) => setToDate(e.target.value)}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {isCalendar
+                      ? "留空：起点取最早历史（BACKFILL_START_DATE），终点默认到今年年底（拉全当年节假日）。超出 baostock 已发布范围的未来日期会被自动忽略。"
+                      : isFactors
+                        ? "留空默认对齐最近 7 个交易日（当天为交易日则含当天）。也可指定要对齐的某段区间。将对全市场（或指定代码）用 baostock 重拉该区间日 K 覆盖 gotdx 数据并刷因子。baostock 串行，全市场约数小时，建议非交易时段执行。"
+                        : "留空：增量按各自水位起点、全量按默认起始日。指定区间后将对所选范围内全部代码按该区间回补（跳过「仅落后标的」预筛）。如只拉某一交易日，把起止设为同一天。"}
+                  </p>
                 </div>
               ) : null}
 

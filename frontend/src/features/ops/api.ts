@@ -4,6 +4,7 @@ import type {
   TDataSource,
   TFreshness,
   TJobRun,
+  TSourceStatsResult,
   TUpdateJob,
 } from "@/types/admin";
 
@@ -39,6 +40,8 @@ export const opsApi = {
       type?: string;
       market?: string;
       codes?: string[];
+      from_date?: string;
+      to_date?: string;
     },
   ) =>
     getData<{ runId: number; status: TJobRun["status"] }>(
@@ -59,5 +62,12 @@ export const opsApi = {
   freshness: (market = "CN") =>
     getData<TFreshness>(
       httpClient.get("freshness", { searchParams: { market } }),
+    ),
+
+  sourceStats: (market = "CN", refresh = false) =>
+    getData<TSourceStatsResult>(
+      httpClient.get("klines/source-stats", {
+        searchParams: refresh ? { market, refresh: "true" } : { market },
+      }),
     ),
 };
