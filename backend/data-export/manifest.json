@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "A股历史行情冷备导出（warden-stock-data）",
+  "exported_at": "2026-06-11T04:12:00+08:00",
+  "cutoff_date": "2026-06-08",
+  "market": "CN",
+  "source_database": "warden_data",
+  "notes": [
+    "仅包含 market=CN 的 A 股数据",
+    "K 线与复权因子仅导出 trade_date <= cutoff_date 的记录",
+    "update_watermarks.last_trade_date 已截断至 cutoff_date",
+    "不含实时快照（stock_quotes/index_quotes）、管理员、API 凭证等运营数据"
+  ],
+  "files": [
+    {
+      "name": "securities.csv.gz",
+      "table": "securities",
+      "rows": 5533,
+      "bytes": 71150,
+      "sha256": "7b530b23340a8cb215b118559a018e97a7e029ff1c0246a087a967c2329d98e4"
+    },
+    {
+      "name": "trading_calendars.csv.gz",
+      "table": "trading_calendars",
+      "rows": 12956,
+      "bytes": 38047,
+      "sha256": "2c6e2dc3b6657253ea7283e484426bafce86092a82d1fc3955632c666cb31e29"
+    },
+    {
+      "name": "stock_daily_klines.csv.gz",
+      "table": "stock_daily_klines",
+      "rows": 16808093,
+      "bytes": 611433156,
+      "sha256": "e3064873d73208677fb28311b0daa4840475dba4b1c1d0f31c9a91407f572956"
+    },
+    {
+      "name": "stock_adjust_factors.csv.gz",
+      "table": "stock_adjust_factors",
+      "rows": 59235,
+      "bytes": 737164,
+      "sha256": "12bb09e8506e85764c247a70066524e96afaae32b50cfec81f9e2e7c53be1526"
+    },
+    {
+      "name": "update_watermarks.csv.gz",
+      "table": "update_watermarks",
+      "rows": 5207,
+      "bytes": 14224,
+      "sha256": "179e904179a30e74158b08e100f754276a47c10b90524d7e407d81d1c0ed200e"
+    }
+  ],
+  "import_order": [
+    "securities.csv.gz",
+    "trading_calendars.csv.gz",
+    "stock_daily_klines.csv.gz",
+    "stock_adjust_factors.csv.gz",
+    "update_watermarks.csv.gz"
+  ],
+  "total_bytes": 612293741,
+  "total_rows": 16885024
+}

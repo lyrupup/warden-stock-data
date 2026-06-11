@@ -9,6 +9,10 @@ secrets/
 # 依赖
 node_modules/
 vendor/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
 # 构建产物
 dist/
@@ -33,6 +37,10 @@ tmp/
 .cache/
 coverage/
 .gocache/
+.gomodcache/
 
 # PostgreSQL 数据目录（Docker bind mount 持久化）
 backend/deploy/pgdata/
+
+# A 股历史行情冷备（体积大，不入库；manifest/import.sh/SKILL.md 保留）
+backend/data-export/data/*.csv.gz
